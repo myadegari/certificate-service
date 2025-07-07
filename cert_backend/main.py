@@ -242,8 +242,8 @@ def get_users(
 
 
 # # Create tables if they don't exist (uncomment if needed)
-# Base.metadata.create_all(bind=engine)
 
+Base.metadata.create_all(bind=engine)
 if __name__ == "__main__":
     import uvicorn
 
