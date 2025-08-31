@@ -1,0 +1,28 @@
+import os
+from fastapi import UploadFile
+# from services.certification_generator import batch_generate_certificates, convert_to_png
+
+async def generate_certificate(enrollment_data: dict, template_path: str, output_dir: str):
+    """Generate a certificate based on enrollment data and return the path to the generated PDF."""
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    certificate_data_list = [
+        {
+            "gender": enrollment_data["user"]["gender"],
+            "name": enrollment_data["user"]["name"],
+            "national": enrollment_data["user"]["nationalId"],
+            "course": enrollment_data["course"]["name"],
+            "org": enrollment_data["course"]["organizingUnit"],
+            "date": enrollment_data["course"]["date"],
+            "unique": enrollment_data["certificateNumber"],
+            # "image_photo": "path/to/photo.png",  # Update with actual image path
+            # "image_logo": "path/to/logo.png",    # Update with actual image path
+            "qr_url": f"https://my.site/cert/{enrollment_data['certificateNumber']}"
+        }
+    ]
+
+    # output_pptx = await batch_generate_certificates(template_path, output_dir, certificate_data_list)
+    # output_pdf = convert_to_png(output_pptx, output_dir)
+
+    # return output_pdf

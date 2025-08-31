@@ -1,0 +1,43 @@
+{
+  "users": [
+    {
+      "name": "certuser",
+      "password": "securepassword123",
+      "tags": "administrator"
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "tenant1"
+    }
+  ],
+  "permissions": [
+    {
+      "user": "certuser",
+      "vhost": "tenant1",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "queues": [
+    {
+      "name": "certificate_jobs",
+      "vhost": "tenant1",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-max-length": 10000
+      }
+    },
+    {
+      "name": "certificate_notifications",
+      "vhost": "tenant1",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-max-length": 10000
+      }
+    }
+  ]
+}

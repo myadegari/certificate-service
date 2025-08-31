@@ -10,12 +10,12 @@
             "request": "launch",
             "module": "uvicorn",
             "args": [
-                "cert_backend.main:app",
+                "app:app",
                 "--reload",
-                // "--host", 
-                // "0.0.0.0"  
+                "--workers",
+                "1"
             ],
-            // "jinja": true
+            "jinja": true
         }
     ]
 }

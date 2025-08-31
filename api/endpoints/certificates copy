@@ -1,0 +1,65 @@
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
+from typing import Dict
+import os
+from models.certificate import CertificateRequest
+# from services.certificate_generator import generate_certificate, convert_to_png
+
+router = APIRouter()
+
+@router.post("/generate/")
+async def generate_certificate_endpoint(request: CertificateRequest):
+    try:
+        # Get template path from config/environment
+        template_path = os.path.join( "templates", "certificate_template.pptx")
+        output_dir = "temp_certificates"
+        
+        # Ensure output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Prepare certificate data
+        certificate_data = {
+            "gender": request.user.gender,
+            "name": f"{request.user.firstName} {request.user.lastName}",
+            "national": request.user.nationalId,
+            "course": request.course.name,
+            "org": request.course.organizingUnit,
+            "date": request.course.date,
+            "number": request.certificateNumber,
+            "unique": request.certificateId,
+            # Add other fields as needed
+        }
+
+        # Generate certificate
+        # pptx_path = await generate_certificate(
+        #     enrollment_data=certificate_data,
+        #     template_path=template_path,
+        #     output_dir=output_dir,
+        # )
+
+        # Convert to PDF
+        # pdf_path = await convert_to_png(pptx_path, output_dir)
+
+        # Return PDF file
+        # return FileResponse(
+        #     pdf_path,
+        #     media_type="application/pdf",
+        #     filename=f"certificate_{request.certificateId}.pdf"
+        # )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/{certificate_id}")
+async def get_certificate(certificate_id: str):
+    # Implementation for retrieving existing certificates
+    pdf_path = f"temp_certificates/certificate_{certificate_id}.pdf"
+    
+    if not os.path.exists(pdf_path):
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=f"certificate_{certificate_id}.pdf"
+    )
