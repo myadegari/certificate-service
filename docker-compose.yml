@@ -1,16 +1,14 @@
-
 services:
   rabbitmq:
     image: rabbitmq:3.13-management
     container_name: rabbitmq
     environment:
-      - RABBITMQ_DEFAULT_USER=certuser
-      - RABBITMQ_DEFAULT_PASS=securepassword123
-      - RABBITMQ_DEFAULT_VHOST=tenant1
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS}
+      - RABBITMQ_DEFAULT_VHOST=${RABBITMQ_VHOST}
     volumes:
-      # - rabbitmq_data:/var/lib/rabbitmq
+      - rabbitmq_data:/var/lib/rabbitmq
       - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
-      # - ./rabbitmq/ssl:/etc/rabbitmq/ssl:ro  # Uncomment for SSL in production
     ports:
       - "127.0.0.1:9105:5672"  # AMQP
       - "127.0.0.1:9106:15672"  # Management UI
@@ -21,6 +19,45 @@ services:
       retries: 5
     restart: unless-stopped
 
-# volumes:
-#   rabbitmq_data:
-#     name: rabbitmq_data
+  redis:
+    image: redis:7.2-alpine
+    container_name: redis_cache
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-securepassword123}
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-securepassword123}
+    ports:
+      - "127.0.0.1:9107:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-securepassword123}", "--raw", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  redisinsight:
+    image: redislabs/redisinsight:latest
+    container_name: redisinsight
+    ports:
+      - "127.0.0.1:9108:5540"
+    volumes:
+      - redisinsight_data:/db
+    environment:
+      - REDISINSIGHT_HOST=0.0.0.0  # Allow external connections
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+volumes:
+  redis_data:
+    name: redis_data
+  rabbitmq_data:
+    name: rabbitmq_data
+  redisinsight_data:
+    name: redisinsight_data

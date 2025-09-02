@@ -11,50 +11,128 @@ from pika.exceptions import AMQPConnectionError
 # Configure logging
 # logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 # logger = logging.getLogger(__name__)
+from dotenv import load_dotenv
+from pathlib import Path
+import os
+import redis
 
-RABBITMQ_HOST = "localhost"
-RABBITMQ_PORT = 9105
-RABBITMQ_VHOST = "tenant1"
-RABBITMQ_USER = "certuser"
-RABBITMQ_PASS = "securepassword123"
-RABBITMQ_JOB_QUEUE = "certificate_jobs"
-RABBITMQ_NOTIFICATION_QUEUE = "certificate_notifications"
+load_dotenv()
 
-def publish_notification(job_id: str, status: str, pdf_path: str = ""):
+# RabbitMQ connection settings
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST","")
+RABBITMQ_PORT = os.getenv("RABBITMQ_PORT","")
+RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST","")
+RABBITMQ_USER = os.getenv("RABBITMQ_USER","")
+RABBITMQ_PASS = os.getenv("RABBITMQ_PASS","")
+RABBITMQ_JOB_QUEUE = os.getenv("RABBITMQ_JOB_QUEUE","")
+RABBITMQ_NOTIFICATION_QUEUE = os.getenv("RABBITMQ_NOTIFICATION_QUEUE","")
+
+REDIS_HOST = os.getenv("REDIS_HOST", "")
+REDIS_PORT = os.getenv("REDIS_PORT", "")
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+
+# Initialize Redis client
+redis_client = redis.Redis(
+    host=REDIS_HOST,
+    port=int(REDIS_PORT),
+    password=REDIS_PASSWORD,
+    decode_responses=True
+)
+
+def publish_notification(job_id: str, status: str, pdf_path: str = "", error_message: str = ""):
+    """Publish job status notification to RabbitMQ queue and Redis with retry mechanism"""
     print(f"Publishing notification for job {job_id}: status={status}, pdf_path={pdf_path}")
+    
+    message = {
+        "job_id": job_id,
+        "status": status,
+        "pdf_path": pdf_path,
+        "timestamp": time.time()
+    }
+    if error_message and status == "failed":
+        message["error"] = error_message
+
+    # Store status in Redis first
+    try:
+        # Store for 24 hours
+        redis_client.setex(
+            f"job_status:{job_id}",
+            86400,  
+            json.dumps(message)
+        )
+    except Exception as e:
+        print(f"Error storing status in Redis for job {job_id}: {str(e)}")
+
     credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
     parameter = pika.ConnectionParameters(
         host=RABBITMQ_HOST,
         port=RABBITMQ_PORT,
         virtual_host=RABBITMQ_VHOST,
-        credentials=credentials
+        credentials=credentials,
+        heartbeat=600,  # Add heartbeat to prevent connection timeouts
+        blocked_connection_timeout=300
     )
+    
     max_retries = 5
     retry_delay = 5  # seconds
+    
+    message = {
+        "job_id": job_id,
+        "status": status,
+        "pdf_path": pdf_path,
+        "timestamp": time.time()
+    }
+    if error_message and status == "failed":
+        message["error"] = error_message
+
     for attempt in range(max_retries):
+        connection = None
         try:
             connection = pika.BlockingConnection(parameter)
-
             channel = connection.channel()
             channel.queue_declare(queue=RABBITMQ_NOTIFICATION_QUEUE, durable=True)
+            
+            # Publish with mandatory flag to ensure message delivery
             channel.basic_publish(
                 exchange="",
                 routing_key=RABBITMQ_NOTIFICATION_QUEUE,
-                body=json.dumps({"job_id": job_id, "status": status, "pdf_path": pdf_path}),
-                properties=pika.BasicProperties(delivery_mode=2)
+                body=json.dumps(message),
+                properties=pika.BasicProperties(
+                    delivery_mode=2,  # make message persistent
+                    content_type='application/json',
+                    timestamp=int(time.time())
+                ),
+                mandatory=True
             )
+            
             connection.close()
+            print(f"Successfully published notification for job {job_id}")
+            return True
+            
         except AMQPConnectionError as e:
-            print(f"Error publishing notification for job {job_id}: {str(e)}")
+            print(f"Connection error publishing notification for job {job_id}: {str(e)}")
             if attempt < max_retries - 1:
-                print(f"Retrying in {retry_delay} seconds...")
+                print(f"Retrying in {retry_delay} seconds... (attempt {attempt + 1}/{max_retries})")
                 time.sleep(retry_delay)
             else:
-                print("Max retries reached. Worker failed to start.")
+                print(f"Max retries reached for job {job_id}. Failed to publish notification.")
                 raise
         except Exception as e:
-            print(f"Unexpected error in worker: {str(e)}")
+            print(f"Unexpected error publishing notification for job {job_id}: {str(e)}")
             raise
+        finally:
+            try:
+                if connection is not None and connection.is_open:
+                    connection.close()
+            except Exception:
+                pass
+
+async def process_images(data):
+    image_data = {}
+    for k, v in data["image_data"].items():
+        saved_path = await safe_image(v)
+        image_data[k] = saved_path
+    return image_data
 
 def callback(ch, method, properties, body):
     job = json.loads(body)
@@ -62,11 +140,18 @@ def callback(ch, method, properties, body):
     data = job["data"]
     print(f"Processing job {job_id}")
     
-    image_data = {k: safe_image(v) for k, v in data["image_data"].items()}
+    # image_data = {k: safe_image(v) for k, v in data["image_data"].items()}
+        # Update initial status in Redis
+    redis_client.setex(
+        f"job_status:{job_id}",
+        86400,
+        json.dumps({"job_id": job_id, "status": "processing", "timestamp": time.time()})
+    )
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
+        image_data = loop.run_until_complete(process_images(data))
         print(f"Generating PPTX...")
         print(f"Generated PPTX: {data['template_path']}")
         pptx_path = loop.run_until_complete(
@@ -89,8 +174,9 @@ def callback(ch, method, properties, body):
         publish_notification(job_id, "completed", pdf_path)
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as e:
-        print(f"Error processing job {job_id}: {str(e)}")
-        publish_notification(job_id, "failed")
+        error_msg = str(e)
+        print(f"Error processing job {job_id}: {error_msg}")
+        publish_notification(job_id, "failed", error_message=error_msg)
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
     finally:
         loop.close()

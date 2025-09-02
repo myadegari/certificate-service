@@ -8,6 +8,11 @@ import qrcode
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pptxtopdf import convert
+import requests
+import aiohttp
+import aiofiles
+from copy import deepcopy
+
 
 def generate_qr_code(data: str, save_path: str):
     qr = qrcode.QRCode(
@@ -61,8 +66,8 @@ def add_image_to_placeholder(slide, image_data):
             for img_key in image_placeholders:
                 if img_key in image_data:
                     img_path = image_data[img_key]
-                    if not os.path.exists(img_path):
-                        img_path = "services/n-image.png"
+                    # if not os.path.exists(img_path):
+                    #     img_path = "services/n-image.png"
                     left = shape.left
                     top = shape.top
                     width = shape.width
@@ -116,5 +121,39 @@ async def convert_to_pdf(pptx_path, output_dir):
         return output_path
     return await loop.run_in_executor(None, windows_convert)
 
-def safe_image(image_path: str) -> str:
-    return image_path if os.path.exists(image_path) else "services/n-image.png"
+
+
+async def get_image(image_path: str):
+    headers = {
+        'Authorization': f'Bearer {os.getenv("IMAGE_ACCESS_KEY","")}'
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f'{os.getenv("IMAGE_SERVICE_URL","")}?path={image_path}',
+            headers=headers
+        ) as response:
+            if response.status != 200:
+                return None
+            return await response.read()
+
+async def safe_image(image_path: str) -> str:
+    original_path = image_path
+    if image_path:
+        try:
+            image_content = await get_image(image_path)
+            if image_content:
+                # Create services directory if it doesn't exist
+                os.makedirs("services", exist_ok=True)
+                
+                # Keep the original path structure but save in services directory
+                save_path = os.path.join("services", os.path.basename(image_path))
+                async with aiofiles.open(save_path, "wb") as img_file:
+                    await img_file.write(image_content)
+                return save_path
+            else:
+                return "services/n-image.png"
+        except Exception as e:
+            print(f"Error retrieving image {image_path}: {str(e)}")
+            return "services/n-image.png"
+    return original_path
+    # return image_path if os.path.exists(image_path) else "services/n-image.png"

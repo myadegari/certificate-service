@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 import os
 from models.certificate import CertificateRequest,Signatory
-from services.certification_generator import generate_certificate, convert_to_pdf, safe_image
+# from services.certification_generator import generate_certificate, convert_to_pdf
 import jdatetime
 import uuid
 import pika
@@ -43,6 +43,9 @@ def prepare_signatory_data(data)->Signatory:
         signature=data.signature
     )
 
+def safe_image(image_path: str) -> str:
+    return image_path if image_path else "services/n-image.png"
+
 @router.post("/generate/")
 async def generate_certificate_endpoint(request: CertificateRequest):
     try:
@@ -68,8 +71,8 @@ async def generate_certificate_endpoint(request: CertificateRequest):
             "position": signatory_data.position
            }
         image_data = {
-            "photo": safe_image(signatory_data.signature),
-            "logo": safe_image(request.course.unitStamp),
+            "logo": safe_image(signatory_data.signature),
+            "photo": safe_image(request.course.unitStamp),
         }
         if request.category == "2":
             signatory2_data = prepare_signatory_data(request.course.signatory2)
