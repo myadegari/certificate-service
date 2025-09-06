@@ -28,8 +28,9 @@ class Signatory(BaseModel):
 
 class CertificateRequest(BaseModel):
     category: str
+    issuedAt: str
     user: User
     course: Course
     certificateNumber: str
-    certificateId: str | None = None  # Optional; generate if None
+    certificationId: str | None = None  # Optional; generate if None
     qr_url: str | None = None

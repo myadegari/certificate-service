@@ -53,8 +53,8 @@ async def generate_certificate_endpoint(request: CertificateRequest):
         output_dir = "temp_certificates"
         os.makedirs(output_dir, exist_ok=True)
 
-        date = jdatetime.datetime.now().strftime("%Y/%m/%d")
-        cert_id = request.certificateId or str(uuid.uuid4()).upper()
+        # date = jdatetime.datetime.now().strftime("%Y/%m/%d")
+        cert_id = request.certificationId or str(uuid.uuid4()).upper()
         signatory_data = prepare_signatory_data(request.course.signatory)
         text_data = {
             "gender": "جناب آقای" if request.user.gender == "Male" else "سرکار خانم",
@@ -64,8 +64,8 @@ async def generate_certificate_endpoint(request: CertificateRequest):
             "org": request.course.organizingUnit,
             "date": request.course.date,
             "time": request.course.time,
-            "issue": date,
-            "unique": cert_id,
+            "issue": request.issuedAt,
+            "unique": request.certificationId,
             "number": request.certificateNumber,
             "signatory": signatory_data.name,
             "position": signatory_data.position
@@ -97,6 +97,7 @@ async def generate_certificate_endpoint(request: CertificateRequest):
             "qr_data": qr_data,
             "job_id": cert_id
         }
+        # print(job_data)
         publish_to_rabbitmq(job_data, cert_id)
         
         
