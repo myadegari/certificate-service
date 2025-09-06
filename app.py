@@ -1,13 +1,14 @@
 import asyncio
 from contextlib import asynccontextmanager
-
-# import pika
 import json
 import os
+from pathlib import Path
 from typing import Dict
 
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,8 +33,32 @@ REDIS_PORT = os.getenv("REDIS_PORT", "")
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}"
 
+TEMP_DIRS = [
+    "tmp",               # where QR codes, images, etc. are stored
+]
+
 # Track WebSocket clients per job_id
 websocket_clients: Dict[str, list[WebSocket]] = {}
+
+async def cleanup_temp_files():
+    """Delete files older than 48 hours in temp directories"""
+    cutoff_time = asyncio.get_event_loop().time() - (48 * 3600)
+
+    for temp_dir in TEMP_DIRS:
+        dir_path = Path(temp_dir)
+        
+        if not dir_path.exists():
+            continue
+    
+        for file_path in dir_path.iterdir():
+            if file_path.is_file():
+                try:
+                    # Get file modification time
+                   if file_path.stat().st_mtime < cutoff_time:
+                        file_path.unlink()  
+                        print(f"🗑️  Deleted: {file_path}")
+                except Exception as e:
+                    print(f"❌ Error deleting {file_path}: {e}")
 
 
 async def consume_notifications():
@@ -93,6 +118,17 @@ async def consume_notifications():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        cleanup_temp_files,
+        IntervalTrigger(hours=24),
+        id="cleanup_temp_files",
+        name="Clean temp files older than 48h",
+        replace_existing=True,
+    )
+    scheduler.start()
+    print("✅ File cleanup scheduler started")
+    
     # Startup
     app.state.redis = aioredis.from_url(
         REDIS_URL, decode_responses=True, encoding="utf-8"
@@ -102,10 +138,12 @@ async def lifespan(app: FastAPI):
     consumer_task = asyncio.create_task(consume_notifications())
     print("✅ Application started - RabbitMQ notification consumer running")
 
+
     yield  # Application runs here
 
     # Shutdown
     print("🛑 Shutting down - cancelling consumer...")
+    scheduler.shutdown()
     consumer_task.cancel()
     try:
         await consumer_task
@@ -113,6 +151,7 @@ async def lifespan(app: FastAPI):
         pass
 
     await app.state.redis.close()
+    print("✅ Cleanup scheduler and app shut down")
     print("✅ Application shutdown complete")
 
 

@@ -152,10 +152,10 @@ async def safe_image(image_path: str) -> str:
             image_content = await get_image(image_path)
             if image_content:
                 # Create services directory if it doesn't exist
-                os.makedirs("services", exist_ok=True)
+                os.makedirs("tmp", exist_ok=True)
 
                 # Keep the original path structure but save in services directory
-                save_path = os.path.join("services", os.path.basename(image_path))
+                save_path = os.path.join("tmp", os.path.basename(image_path))
                 async with aiofiles.open(save_path, "wb") as img_file:
                     await img_file.write(image_content)
                 return save_path
