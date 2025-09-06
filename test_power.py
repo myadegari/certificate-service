@@ -1,8 +1,12 @@
 # test_powerpoint.py
-import comtypes.client
-import os
 import logging
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+import os
+
+import comtypes.client
+
+logging.basicConfig(
+    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 pptx_path = os.path.abspath("templates/certificate_template.pptx")

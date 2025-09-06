@@ -1,12 +1,14 @@
+import json
+import os
+import uuid
+
+import aio_pika
+from aio_pika import Message
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
-import os
-from models.certificate import CertificateRequest,Signatory
-# from services.certification_generator import generate_certificate, convert_to_pdf
-import jdatetime
-import uuid
-import pika
-import json
+
+from models.certificate import CertificateRequest, Signatory
+
 router = APIRouter()
 
 RABBITMQ_HOST = "localhost"
@@ -19,37 +21,60 @@ RABBITMQ_NOTIFICATION_QUEUE = "certificate_notifications"
 
 # Track WebSocket clients per job_id
 
-def publish_to_rabbitmq(data: dict, job_id: str):
-    credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
-    parameters = pika.ConnectionParameters(host=RABBITMQ_HOST, port=RABBITMQ_PORT, virtual_host=RABBITMQ_VHOST, credentials=credentials)
-    try:
-        connection = pika.BlockingConnection(parameters)
-        channel = connection.channel()
-        channel.queue_declare(queue=RABBITMQ_JOB_QUEUE, durable=True)
-        channel.basic_publish(
-            exchange="",
-            routing_key=RABBITMQ_JOB_QUEUE,
-            body=json.dumps({"job_id": job_id, "data": data}),
-            properties=pika.BasicProperties(delivery_mode=2)
-        )
-        connection.close()
-    except Exception as e:
-        print(f"Error publishing to RabbitMQ: {str(e)}")
 
-def prepare_signatory_data(data)->Signatory:
+async def publish_to_rabbitmq(data: dict, job_id: str):
+    """Async: Publish job to RabbitMQ"""
+    connection_string = f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST}:{RABBITMQ_PORT or 5672}/{RABBITMQ_VHOST or '%2F'}"
+
+    try:
+        # Connect to RabbitMQ
+        connection = await aio_pika.connect_robust(connection_string)
+        async with connection:
+            channel = await connection.channel()
+
+            # Declare queue (durable = survives broker restart)
+            await channel.declare_queue(RABBITMQ_JOB_QUEUE, durable=True)
+
+            # Publish message
+            message_body = json.dumps({"job_id": job_id, "data": data}).encode("utf-8")
+            message = Message(
+                body=message_body,
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,  # survive broker restart
+                content_type="application/json",
+            )
+
+            await channel.default_exchange.publish(
+                message, routing_key=RABBITMQ_JOB_QUEUE
+            )
+
+            print(f"✅ Published job {job_id} to RabbitMQ")
+
+    except Exception as e:
+        print(f"❌ Error publishing to RabbitMQ: {str(e)}")
+        raise  # Let FastAPI handle it and return 500
+
+
+def prepare_signatory_data(data) -> Signatory:
     return Signatory(
         name=f"{data.firstName} {data.lastName}",
         position=data.position,
-        signature=data.signature
+        signature=data.signature,
     )
+
 
 def safe_image(image_path: str) -> str:
     return image_path if image_path else "services/n-image.png"
 
+
 @router.post("/generate/")
 async def generate_certificate_endpoint(request: CertificateRequest):
     try:
-        template_path = os.path.join("templates", "certificate_template2.pptx" if request.category == "2" else "certificate_template.pptx")
+        template_path = os.path.join(
+            "templates",
+            "certificate_template2.pptx"
+            if request.category == "2"
+            else "certificate_template.pptx",
+        )
         output_dir = "temp_certificates"
         os.makedirs(output_dir, exist_ok=True)
 
@@ -68,22 +93,26 @@ async def generate_certificate_endpoint(request: CertificateRequest):
             "unique": request.certificationId,
             "number": request.certificateNumber,
             "signatory": signatory_data.name,
-            "position": signatory_data.position
-           }
+            "position": signatory_data.position,
+        }
         image_data = {
             "logo": safe_image(signatory_data.signature),
             "photo": safe_image(request.course.unitStamp),
         }
         if request.category == "2":
             signatory2_data = prepare_signatory_data(request.course.signatory2)
-            text_data.update({
-                "signatory2": signatory2_data.name,
-                "position2": signatory2_data.position
-            })
-            image_data.update({
-                "photo2": safe_image(signatory2_data.signature),
-                "logo2": safe_image(request.course.unitStamp2 or "")
-            })
+            text_data.update(
+                {
+                    "signatory2": signatory2_data.name,
+                    "position2": signatory2_data.position,
+                }
+            )
+            image_data.update(
+                {
+                    "logo2": safe_image(signatory2_data.signature),
+                    "photo2": safe_image(request.course.unitStamp2 or ""),
+                }
+            )
 
         qr_data = {}
         if request.qr_url or cert_id:
@@ -95,37 +124,22 @@ async def generate_certificate_endpoint(request: CertificateRequest):
             "text_data": text_data,
             "image_data": image_data,
             "qr_data": qr_data,
-            "job_id": cert_id
+            "job_id": cert_id,
         }
-        # print(job_data)
-        publish_to_rabbitmq(job_data, cert_id)
-        
-        
+        await publish_to_rabbitmq(job_data, cert_id)
+
         return JSONResponse(
             status_code=202,
-            content={"job_id": cert_id, "status": "queued", "message": "Certificate generation queued"}
+            content={
+                "job_id": cert_id,
+                "status": "queued",
+                "message": "Certificate generation queued",
+            },
         )
     except Exception as e:
         print(f"Error generating certificate: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-        # pptx_path = await generate_certificate(
-        #     template_path=template_path,
-        #     output_dir=output_dir,
-        #     text_data=text_data,
-        #     image_data=image_data,
-        #     qr_data=qr_data,
-        # )
-
-        # pdf_path = await convert_to_pdf(pptx_path, output_dir)
-
-    #     return FileResponse(
-    #         pdf_path,
-    #         media_type="application/pdf",
-    #         filename=f"certificate_{cert_id}.pdf"
-    #     )
-    # except Exception as e:
-    #     raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/{certificate_id}")
 async def get_certificate(certificate_id: str):
@@ -135,5 +149,5 @@ async def get_certificate(certificate_id: str):
     return FileResponse(
         pdf_path,
         media_type="application/pdf",
-        filename=f"certificate_{certificate_id}.pdf"
+        filename=f"certificate_{certificate_id}.pdf",
     )

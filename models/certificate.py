@@ -1,6 +1,6 @@
-from pydantic import BaseModel
-from datetime import datetime
 from typing import Optional
+
+from pydantic import BaseModel
 
 
 class User(BaseModel):
@@ -8,8 +8,9 @@ class User(BaseModel):
     firstName: str
     lastName: str
     nationalId: str
-    position:Optional[str]=None
+    position: Optional[str] = None
     signature: Optional[str] = None
+
 
 class Course(BaseModel):
     name: str
@@ -21,10 +22,12 @@ class Course(BaseModel):
     unitStamp: str
     unitStamp2: Optional[str] = None
 
+
 class Signatory(BaseModel):
     name: str
     position: str
     signature: str
+
 
 class CertificateRequest(BaseModel):
     category: str

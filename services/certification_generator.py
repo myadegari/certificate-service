@@ -1,17 +1,13 @@
-from pptx import Presentation
-import comtypes.client
+import asyncio
 import os
 import re
-import jdatetime
-import uuid
-import qrcode
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from pptxtopdf import convert
-import requests
-import aiohttp
+
 import aiofiles
-from copy import deepcopy
+import aiohttp
+import comtypes
+from pptx import Presentation
+from pptxtopdf import convert
+import qrcode
 
 
 def generate_qr_code(data: str, save_path: str):
@@ -27,6 +23,7 @@ def generate_qr_code(data: str, save_path: str):
     with open(save_path, "wb") as f:
         img.save(f)
 
+
 def add_qr_to_placeholder(slide, qr_data, qr_output_dir="tmp"):
     if not os.path.exists(qr_output_dir):
         os.makedirs(qr_output_dir)
@@ -34,17 +31,23 @@ def add_qr_to_placeholder(slide, qr_data, qr_output_dir="tmp"):
         if not shape.has_text_frame:
             continue
         text = shape.text
-        image_placeholders = re.findall(r'{{qr:(.*?)}}', text)
+        image_placeholders = re.findall(r"{{qr:(.*?)}}", text)
         if image_placeholders:
             for img_key in image_placeholders:
                 if img_key in qr_data:
                     data = qr_data[img_key]
                     qr_path = os.path.join(qr_output_dir, f"qr_{hash(data)}.png")
                     generate_qr_code(data, qr_path)
-                    left, top, width, height = shape.left, shape.top, shape.width, shape.height
+                    left, top, width, height = (
+                        shape.left,
+                        shape.top,
+                        shape.width,
+                        shape.height,
+                    )
                     shape._element.getparent().remove(shape._element)
                     slide.shapes.add_picture(qr_path, left, top, width, height)
                     break
+
 
 def replace_placeholder_preserve_style(shape, data):
     if not shape.has_text_frame:
@@ -56,12 +59,13 @@ def replace_placeholder_preserve_style(shape, data):
                 if placeholder in run.text:
                     run.text = run.text.replace(placeholder, value)
 
+
 def add_image_to_placeholder(slide, image_data):
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
         text = shape.text
-        image_placeholders = re.findall(r'{{image:(.*?)}}', text)
+        image_placeholders = re.findall(r"{{image:(.*?)}}", text)
         if image_placeholders:
             for img_key in image_placeholders:
                 if img_key in image_data:
@@ -76,7 +80,10 @@ def add_image_to_placeholder(slide, image_data):
                     slide.shapes.add_picture(img_path, left, top, width, height)
                     break
 
-async def generate_certificate(template_path, output_dir, text_data, image_data=None, qr_data=None):
+
+async def generate_certificate(
+    template_path, output_dir, text_data, image_data=None, qr_data=None
+):
     if image_data is None:
         image_data = {}
     if qr_data is None:
@@ -89,13 +96,17 @@ async def generate_certificate(template_path, output_dir, text_data, image_data=
         add_qr_to_placeholder(slide, qr_data)
     for shape in slide.shapes:
         replace_placeholder_preserve_style(shape, text_data)
-    output_filename = f"certificate_{text_data.get('unique', 'filled').replace(' ', '_')}"
+    output_filename = (
+        f"certificate_{text_data.get('unique', 'filled').replace(' ', '_')}"
+    )
     output_pptx = os.path.join(output_dir, f"{output_filename}.pptx")
     prs.save(output_pptx)
     return output_pptx
 
+
 async def convert_to_pdf(pptx_path, output_dir):
     loop = asyncio.get_running_loop()
+
     def windows_convert():
         comtypes.CoInitialize()
         try:
@@ -113,28 +124,26 @@ async def convert_to_pdf(pptx_path, output_dir):
             except Exception as e:
                 raise Exception(f"PowerPoint error: {str(e)}")
             # finally:
-                # powerpoint.Quit()
+            # powerpoint.Quit()
         finally:
             comtypes.CoUninitialize()
         if os.path.exists(pptx_path):
             os.remove(pptx_path)  # Cleanup PPTX
         return output_path
+
     return await loop.run_in_executor(None, windows_convert)
 
 
-
 async def get_image(image_path: str):
-    headers = {
-        'Authorization': f'Bearer {os.getenv("IMAGE_ACCESS_KEY","")}'
-    }
+    headers = {"Authorization": f"Bearer {os.getenv('IMAGE_ACCESS_KEY', '')}"}
     async with aiohttp.ClientSession() as session:
         async with session.get(
-            f'{os.getenv("IMAGE_SERVICE_URL","")}?path={image_path}',
-            headers=headers
+            f"{os.getenv('IMAGE_SERVICE_URL', '')}?path={image_path}", headers=headers
         ) as response:
             if response.status != 200:
                 return None
             return await response.read()
+
 
 async def safe_image(image_path: str) -> str:
     original_path = image_path
@@ -144,7 +153,7 @@ async def safe_image(image_path: str) -> str:
             if image_content:
                 # Create services directory if it doesn't exist
                 os.makedirs("services", exist_ok=True)
-                
+
                 # Keep the original path structure but save in services directory
                 save_path = os.path.join("services", os.path.basename(image_path))
                 async with aiofiles.open(save_path, "wb") as img_file:
