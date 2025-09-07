@@ -119,13 +119,14 @@ async def generate_certificate_endpoint(request: CertificateRequest):
             qr_data["url"] = request.qr_url or f"https://my.site/cert/{cert_id}"
 
         job_data = {
-            "courseCode": request.course.courseCode,
             "template_path": template_path,
             "output_dir": output_dir,
             "text_data": text_data,
             "image_data": image_data,
             "qr_data": qr_data,
             "job_id": cert_id,
+            "courseCode": request.course.courseCode,
+            "userId": request.user.userId
         }
         await publish_to_rabbitmq(job_data, cert_id)
 

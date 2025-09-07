@@ -154,7 +154,7 @@ async def process_job(message: AbstractIncomingMessage):
             print(f"✅ Generated PDF: {pdf_path}")
             # ✅ --- UPLOAD TO MINIO + SAVE TO MONGODB ---
             file_id = await upload_pdf_to_minio_and_save_to_db(
-                pdf_path, job_id, data["courseCode"]
+                pdf_path, job_id, data["courseCode"], data["userId"]
             )
             if not file_id:
                 raise Exception("Failed to upload PDF to storage")

@@ -78,7 +78,7 @@ async def get_file_presigned_url(file_id: str) -> str | None:
 
 
 async def upload_pdf_to_minio_and_save_to_db(
-    pdf_path: str, job_id: str, courseCode: str
+    pdf_path: str, job_id: str, courseCode: str, userId: str 
 ) -> str | None:
     """
     Uploads PDF to MinIO, saves record to MongoDB, returns MongoDB File _id.
@@ -103,6 +103,7 @@ async def upload_pdf_to_minio_and_save_to_db(
 
         # --- Save to MongoDB ---
         file_record = {
+            "userId": userId,  # Link to user if available
             "courseId": courseCode,  # Optional: link to user if you have user ID in job data
             "bucket": MINIO_CERT_BUCKET,
             "objectName": object_name,
