@@ -13,6 +13,7 @@ class User(BaseModel):
 
 
 class Course(BaseModel):
+    courseCode: str
     name: str
     organizingUnit: str
     date: str

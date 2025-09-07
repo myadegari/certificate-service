@@ -9,6 +9,8 @@ from pptx import Presentation
 from pptxtopdf import convert
 import qrcode
 
+from core.storage import get_file_presigned_url
+
 
 def generate_qr_code(data: str, save_path: str):
     qr = qrcode.QRCode(
@@ -135,14 +137,19 @@ async def convert_to_pdf(pptx_path, output_dir):
 
 
 async def get_image(image_path: str):
-    headers = {"Authorization": f"Bearer {os.getenv('IMAGE_ACCESS_KEY', '')}"}
+    image_url = await get_file_presigned_url(image_path)
+    if not image_url:
+        return None
     async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"{os.getenv('IMAGE_SERVICE_URL', '')}?path={image_path}", headers=headers
-        ) as response:
-            if response.status != 200:
-                return None
-            return await response.read()
+        try:
+            async with session.get(image_url) as response:
+                if response.status != 200:
+                    print(f"Failed to fetch image: {response.status} - {image_url}")
+                    return None
+                return await response.read()
+        except Exception as e:
+            print(f"Error fetching image from {image_url}: {e}")
+            return None
 
 
 async def safe_image(image_path: str) -> str:

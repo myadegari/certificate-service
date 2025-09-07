@@ -34,11 +34,12 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}"
 
 TEMP_DIRS = [
-    "tmp",               # where QR codes, images, etc. are stored
+    "tmp",  # where QR codes, images, etc. are stored
 ]
 
 # Track WebSocket clients per job_id
 websocket_clients: Dict[str, list[WebSocket]] = {}
+
 
 async def cleanup_temp_files():
     """Delete files older than 48 hours in temp directories"""
@@ -46,16 +47,16 @@ async def cleanup_temp_files():
 
     for temp_dir in TEMP_DIRS:
         dir_path = Path(temp_dir)
-        
+
         if not dir_path.exists():
             continue
-    
+
         for file_path in dir_path.iterdir():
             if file_path.is_file():
                 try:
                     # Get file modification time
-                   if file_path.stat().st_mtime < cutoff_time:
-                        file_path.unlink()  
+                    if file_path.stat().st_mtime < cutoff_time:
+                        file_path.unlink()
                         print(f"🗑️  Deleted: {file_path}")
                 except Exception as e:
                     print(f"❌ Error deleting {file_path}: {e}")
@@ -128,7 +129,7 @@ async def lifespan(app: FastAPI):
     )
     scheduler.start()
     print("✅ File cleanup scheduler started")
-    
+
     # Startup
     app.state.redis = aioredis.from_url(
         REDIS_URL, decode_responses=True, encoding="utf-8"
@@ -137,7 +138,6 @@ async def lifespan(app: FastAPI):
     # Start RabbitMQ consumer task
     consumer_task = asyncio.create_task(consume_notifications())
     print("✅ Application started - RabbitMQ notification consumer running")
-
 
     yield  # Application runs here
 

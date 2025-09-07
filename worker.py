@@ -10,6 +10,7 @@ from aio_pika.abc import AbstractIncomingMessage
 from dotenv import load_dotenv
 import redis
 
+from core.storage import upload_pdf_to_minio_and_save_to_db
 from services.certification_generator import (
     convert_to_pdf,
     generate_certificate,
@@ -46,13 +47,13 @@ redis_client = redis.Redis(
 # ASYNC PUBLISH NOTIFICATION
 # ================================
 async def publish_notification(
-    job_id: str, status: str, pdf_path: str = "", error_message: str = ""
+    job_id: str, status: str, file_id: str = "", error_message: str = ""
 ):
     """Async: Publish job status notification to RabbitMQ and Redis with retry"""
     message = {
         "job_id": job_id,
         "status": status,
-        "pdf_path": pdf_path,
+        "file_id": file_id,  # ✅ Send MongoDB File ID instead of path
         "timestamp": time.time(),
     }
     if error_message and status == "failed":
@@ -151,8 +152,14 @@ async def process_job(message: AbstractIncomingMessage):
             print("📄 Converting PPTX to PDF...")
             pdf_path = await convert_to_pdf(pptx_path, data["output_dir"])
             print(f"✅ Generated PDF: {pdf_path}")
-
-            await publish_notification(job_id, "completed", pdf_path)
+            # ✅ --- UPLOAD TO MINIO + SAVE TO MONGODB ---
+            file_id = await upload_pdf_to_minio_and_save_to_db(
+                pdf_path, job_id, data["courseCode"]
+            )
+            if not file_id:
+                raise Exception("Failed to upload PDF to storage")
+            # ✅ --- SEND NOTIFICATION WITH FILE_ID ---
+            await publish_notification(job_id, "completed", file_id=file_id)
 
         except Exception as e:
             error_msg = str(e)
