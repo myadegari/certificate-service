@@ -15,6 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from redis import asyncio as aioredis
 
 from api.endpoints.certificates import router as certificates_router
+from core.storage import (  # <-- Import new functions
+    bulk_sync_redis_to_mongo,
+    get_job_status_from_db,
+)
 
 load_dotenv()
 
@@ -119,6 +123,14 @@ async def consume_notifications():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+     # Startup
+    app.state.redis = aioredis.from_url(
+        REDIS_URL, decode_responses=True, encoding="utf-8"
+    )
+        # Start RabbitMQ consumer task
+    consumer_task = asyncio.create_task(consume_notifications())
+    print("✅ Application started - RabbitMQ notification consumer running")
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         cleanup_temp_files,
@@ -127,17 +139,20 @@ async def lifespan(app: FastAPI):
         name="Clean temp files older than 48h",
         replace_existing=True,
     )
-    scheduler.start()
-    print("✅ File cleanup scheduler started")
-
-    # Startup
-    app.state.redis = aioredis.from_url(
-        REDIS_URL, decode_responses=True, encoding="utf-8"
+    scheduler.add_job(
+        bulk_sync_redis_to_mongo,
+        IntervalTrigger(hours=24),
+        args=[app.state.redis],
+        id="sync_redis_to_mongo",
+        name="Sync Redis job statuses to MongoDB",
+        replace_existing=True,
     )
+    scheduler.start()
+    print("✅ File cleanup and DB sync schedulers started")
 
-    # Start RabbitMQ consumer task
-    consumer_task = asyncio.create_task(consume_notifications())
-    print("✅ Application started - RabbitMQ notification consumer running")
+   
+
+
 
     yield  # Application runs here
 
@@ -171,6 +186,11 @@ app.include_router(certificates_router, prefix="/certificates", tags=["certifica
 async def get_job_status(job_id: str) -> dict:
     """Get current job status from Redis"""
     try:
+        # --- NEW: Check MongoDB first ---
+        db_status = await get_job_status_from_db(job_id)
+        if db_status:
+            return db_status
+        # --- END NEW ---
         redis_status = await app.state.redis.get(f"job_status:{job_id}")
         if redis_status:
             return json.loads(redis_status)

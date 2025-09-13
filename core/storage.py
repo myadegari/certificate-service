@@ -1,5 +1,6 @@
 # app/core/storage.py
 from datetime import datetime, timedelta, timezone
+import json
 import os
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from dotenv import load_dotenv
 from minio import Minio
 from minio.error import S3Error
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import UpdateOne
 
 load_dotenv()
 
@@ -18,6 +20,7 @@ MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "certification")
 mongo_client = AsyncIOMotorClient(MONGO_URI)
 db = mongo_client[MONGO_DB_NAME]
 files_collection = db["files"]  # Collection where FileModel saves records
+job_statuses_collection = db["job_statuses"] # <-- New collection
 
 # --- MinIO Setup ---
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT")
@@ -128,3 +131,70 @@ async def upload_pdf_to_minio_and_save_to_db(
     except Exception as e:
         print(f"❌ Failed to upload/save PDF for job {job_id}: {e}")
         return None
+
+# --- NEW: Job Status Storage Logic ---
+async def upsert_job_status_in_db(job_id: str, status_data: dict):
+    """
+    Updates or inserts a job status record in MongoDB.
+    """
+    try:
+        await job_statuses_collection.update_one(
+            {"job_id": job_id},
+            {"$set": status_data, "$setOnInsert": {"createdAt": datetime.now(tz=timezone.utc)}},
+            upsert=True
+        )
+        print(f"Upserted status for job {job_id} to MongoDB: {status_data['status']}")
+    except Exception as e:
+        print(f"Error upserting job status to MongoDB for {job_id}: {e}")
+
+async def get_job_status_from_db(job_id: str) -> dict | None:
+    """
+    Retrieves the latest job status from MongoDB.
+    """
+    try:
+        status_doc = await job_statuses_collection.find_one({"job_id": job_id})
+        if status_doc:
+            # Pydantic models might not like ObjectId, so remove it
+            status_doc.pop('_id', None)
+        return status_doc
+    except Exception as e:
+        print(f"Error fetching job status from MongoDB for {job_id}: {e}")
+        return None
+
+async def bulk_sync_redis_to_mongo(redis_client):
+    """
+    Scans Redis for job statuses and bulk-updates them in MongoDB.
+    """
+    updated_count = 0
+    try:
+        print("🚀 Starting periodic Redis to MongoDB sync...")
+        cursor = '0'
+        while cursor != 0:
+            cursor, keys = await redis_client.scan(cursor=cursor, match='job_status:*', count=100)
+            if not keys:
+                continue
+
+            statuses = await redis_client.mget(keys)
+            
+            operations = []
+            for i, status_json in enumerate(statuses):
+                if status_json:
+                    status_data = json.loads(status_json)
+                    job_id = keys[i].decode('utf-8').split(':')[-1]
+                    operations.append(
+                        UpdateOne(
+                            {"job_id": job_id},
+                            {"$set": status_data, "$setOnInsert": {"createdAt": datetime.now(tz=timezone.utc)}},
+                            upsert=True
+                        )
+                    )
+            
+            if operations:
+                result = await job_statuses_collection.bulk_write(operations)
+                updated_count += result.upserted_count + result.modified_count
+
+        print(f"✅ Sync complete. Synced {updated_count} job statuses.")
+        return updated_count
+    except Exception as e:
+        print(f"❌ Error during Redis to MongoDB sync: {e}")
+        return 0

@@ -10,7 +10,7 @@ from aio_pika.abc import AbstractIncomingMessage
 from dotenv import load_dotenv
 import redis
 
-from core.storage import upload_pdf_to_minio_and_save_to_db
+from core.storage import upload_pdf_to_minio_and_save_to_db, upsert_job_status_in_db
 from services.certification_generator import (
     convert_to_pdf,
     generate_certificate,
@@ -64,6 +64,8 @@ async def publish_notification(
         redis_client.setex(f"job_status:{job_id}", 86400, json.dumps(message))
     except Exception as e:
         print(f"Error storing in Redis for job {job_id}: {str(e)}")
+    if status in ["completed", "failed"]:
+        await upsert_job_status_in_db(job_id, message)
 
     connection_string = f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST}:{RABBITMQ_PORT or 5672}/{RABBITMQ_VHOST or '%2F'}"
 
