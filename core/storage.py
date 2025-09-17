@@ -14,12 +14,13 @@ from pymongo import UpdateOne
 load_dotenv()
 
 # --- MongoDB Setup ---
-MONGO_URI = os.getenv("MONGO_URI")
-MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "certification")
+MONGO_URI = os.getenv("MONGODB_URI")
+MONGO_DB_NAME = os.getenv("MONGODB_DB_NAME", "certification")
 
 mongo_client = AsyncIOMotorClient(MONGO_URI)
 db = mongo_client[MONGO_DB_NAME]
 files_collection = db["files"]  # Collection where FileModel saves records
+users_collection = db["users"]
 job_statuses_collection = db["job_statuses"] # <-- New collection
 
 # --- MinIO Setup ---
@@ -29,6 +30,7 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
 MINIO_USE_SSL = os.getenv("MINIO_USE_SSL", "false").lower() == "true"
 MINIO_CERT_BUCKET = os.getenv("MINIO_CERT_BUCKET", "certificates")
+MINIO_REPORT_BUCKET = os.getenv("MINIO_REPORT_BUCKET", "reports")
 
 minio_client = Minio(
     f"{MINIO_ENDPOINT}:{MINIO_PORT}",
@@ -41,10 +43,14 @@ minio_client = Minio(
 EXPIRY_HOURS = 24
 
 # Ensure bucket exists
-found = minio_client.bucket_exists(MINIO_CERT_BUCKET)
-if not found:
+found_cert_bucket = minio_client.bucket_exists(MINIO_CERT_BUCKET)
+found_report_bucket = minio_client.bucket_exists(MINIO_REPORT_BUCKET)
+if not found_cert_bucket:
     minio_client.make_bucket(MINIO_CERT_BUCKET)
     print(f"Created bucket: {MINIO_CERT_BUCKET}")
+if not found_report_bucket:
+    minio_client.make_bucket(MINIO_REPORT_BUCKET)
+    print(f"Created bucket: {MINIO_REPORT_BUCKET}")
 
 
 async def get_file_presigned_url(file_id: str) -> str | None:
@@ -81,46 +87,82 @@ async def get_file_presigned_url(file_id: str) -> str | None:
 
 
 async def upload_pdf_to_minio_and_save_to_db(
-    pdf_path: str, job_id: str, courseCode: str, userId: str 
+    pdf_path: str, job_id: str,job_type:str, courseCode: str, userId: str 
 ) -> str | None:
     """
     Uploads PDF to MinIO, saves record to MongoDB, returns MongoDB File _id.
     """
     try:
         # --- Upload to MinIO ---
-        object_name = f"{courseCode}/{Path(pdf_path).name}"
-
-        # Upload file
-        minio_client.fput_object(
+        object_name = None
+        file_record = None
+        if job_type == "certificate":
+            object_name = f"{courseCode}/{Path(pdf_path).name}"
+            minio_client.fput_object(
             bucket_name=MINIO_CERT_BUCKET,
             object_name=object_name,
             file_path=pdf_path,
             content_type="application/pdf",
-        )
+            )
 
-        presigned_url = minio_client.presigned_get_object(
-            MINIO_CERT_BUCKET,
-            object_name,
-            expires=timedelta(days=7),  # Long expiry for certificates
-        )
+            presigned_url = minio_client.presigned_get_object(
+                MINIO_CERT_BUCKET,
+                object_name,
+                expires=timedelta(days=7),  # Long expiry for certificates
+            )
 
-        # --- Save to MongoDB ---
-        file_record = {
-            "userId": userId,  # Link to user if available
-            "courseId": courseCode,  # Optional: link to user if you have user ID in job data
-            "bucket": MINIO_CERT_BUCKET,
-            "objectName": object_name,
-            "originalName": Path(pdf_path).name,
-            "mimeType": "application/pdf",
-            "size": os.path.getsize(pdf_path),
-            "presignedUrl": presigned_url,
-            "expiresAt": datetime.now(tz=timezone.utc) + timedelta(days=7),
-            "uploadedAt": datetime.now(tz=timezone.utc),
-            "metadata": {
-                "job_id": job_id,
-                "type": "certificate",
-            },
-        }
+            # --- Save to MongoDB ---
+            file_record = {
+                "userId": userId,  # Link to user if available
+                "courseId": courseCode,  # Optional: link to user if you have user ID in job data
+                "bucket": MINIO_CERT_BUCKET,
+                "objectName": object_name,
+                "originalName": Path(pdf_path).name,
+                "mimeType": "application/pdf",
+                "size": os.path.getsize(pdf_path),
+                "presignedUrl": presigned_url,
+                "expiresAt": datetime.now(tz=timezone.utc) + timedelta(days=7),
+                "uploadedAt": datetime.now(tz=timezone.utc),
+                "metadata": {
+                    "job_id": job_id,
+                    "type": "certificate",
+                },
+            }
+        elif job_type == "report":
+            object_name = f"{userId}/{Path(pdf_path).name}"
+            minio_client.fput_object(
+            bucket_name=MINIO_REPORT_BUCKET,
+            object_name=object_name,
+            file_path=pdf_path,
+            content_type="application/pdf",
+            )
+
+            presigned_url = minio_client.presigned_get_object(
+                MINIO_REPORT_BUCKET,
+                object_name,
+                expires=timedelta(days=7),  # Long expiry for certificates
+            )
+
+            # --- Save to MongoDB ---
+            file_record = {
+                "userId": userId,  # Link to user if available
+                "bucket": MINIO_REPORT_BUCKET,
+                "objectName": object_name,
+                "originalName": Path(pdf_path).name,
+                "mimeType": "application/pdf",
+                "size": os.path.getsize(pdf_path),
+                "presignedUrl": presigned_url,
+                "expiresAt": datetime.now(tz=timezone.utc) + timedelta(days=7),
+                "uploadedAt": datetime.now(tz=timezone.utc),
+                "metadata": {
+                    "job_id": job_id,
+                    "type": "report",
+                },
+            }
+        else:
+            raise ValueError(f"Unknown job_type: {job_type}")
+        # Upload file
+       
 
         result = await files_collection.insert_one(file_record)
         file_id = str(result.inserted_id)

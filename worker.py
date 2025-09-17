@@ -16,6 +16,7 @@ from services.certification_generator import (
     generate_certificate,
     safe_image,
 )
+from services import report_generator # <-- ADD THIS IMPORT
 
 load_dotenv()
 
@@ -128,7 +129,9 @@ async def process_job(message: AbstractIncomingMessage):
             job = json.loads(body)
             job_id = job["job_id"]
             data = job["data"]
-            print(f"🔧 Processing job {job_id}")
+            job_type = data.get("job_type", "certificate")
+            print(f"🔧 Processing job {job_id} of type '{job_type}'")
+            await publish_notification(job_id, "processing")
 
             redis_client.setex(
                 f"job_status:{job_id}",
@@ -137,26 +140,42 @@ async def process_job(message: AbstractIncomingMessage):
                     {"job_id": job_id, "status": "processing", "timestamp": time.time()}
                 ),
             )
+            pdf_path = None # Initialize pdf_path variable
+             # --- JOB ROUTER ---
+            if job_type == "certificate":
+                image_data = await process_images(data)
 
-            image_data = await process_images(data)
+                print("🎨 Generating PPTX...")
+                pptx_path = await generate_certificate(
+                    template_path=data["template_path"],
+                    output_dir=data["output_dir"],
+                    text_data=data["text_data"],
+                    image_data=image_data,
+                    qr_data=data["qr_data"],
+                )
+                pptx_path = str(Path(pptx_path).resolve())
+                print(f"✅ Generated PPTX: {pptx_path}")
 
-            print("🎨 Generating PPTX...")
-            pptx_path = await generate_certificate(
-                template_path=data["template_path"],
-                output_dir=data["output_dir"],
-                text_data=data["text_data"],
-                image_data=image_data,
-                qr_data=data["qr_data"],
-            )
-            pptx_path = str(Path(pptx_path).resolve())
-            print(f"✅ Generated PPTX: {pptx_path}")
-
-            print("📄 Converting PPTX to PDF...")
-            pdf_path = await convert_to_pdf(pptx_path, data["output_dir"])
-            print(f"✅ Generated PDF: {pdf_path}")
-            # ✅ --- UPLOAD TO MINIO + SAVE TO MONGODB ---
+                print("📄 Converting PPTX to PDF...")
+                pdf_path = await convert_to_pdf(pptx_path, data["output_dir"])
+                print(f"✅ Generated PDF: {pdf_path}")
+                # ✅ --- UPLOAD TO MINIO + SAVE TO MONGODB ---
+            elif job_type == "report":
+                print("📄 Generating Report...")
+                # --- NEW LOGIC FOR REPORTS ---
+                docx_path = await report_generator.generate_enrollment_report(
+                    template_path=data["template_path"],
+                    output_dir=data["output_dir"],
+                    context=data["context"]
+                )
+                pdf_path = await report_generator.convert_word_to_pdf(docx_path, data["output_dir"])
+            
+            else:
+                raise ValueError(f"Unknown job_type: {job_type}")
+            
+            print(f"☁️ Uploading final PDF: {pdf_path}")
             file_id = await upload_pdf_to_minio_and_save_to_db(
-                pdf_path, job_id, data["courseCode"], data["userId"]
+                pdf_path, job_id,job_type,data.get("courseCode",""), data["userId"]
             )
             if not file_id:
                 raise Exception("Failed to upload PDF to storage")
