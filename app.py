@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from redis import asyncio as aioredis
 
 from api.endpoints.certificates import router as certificates_router
+from api.endpoints.reports import router as reports_router
 from core.storage import (  # <-- Import new functions
     bulk_sync_redis_to_mongo,
     get_job_status_from_db,
@@ -181,6 +182,7 @@ app.add_middleware(
 )
 
 app.include_router(certificates_router, prefix="/certificates", tags=["certificates"])
+app.include_router(reports_router, prefix="/reports", tags=["reports"])
 
 
 async def get_job_status(job_id: str) -> dict:
