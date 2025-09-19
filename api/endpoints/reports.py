@@ -1,13 +1,14 @@
 import json
 import os
-import uuid
 from typing import List
+import uuid
 
 import aio_pika
 from aio_pika import Message
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
 from models.report import ReportRequest
 
 # --- Load RabbitMQ config from environment variables ---
@@ -51,13 +52,15 @@ async def generate_report_endpoint(request: ReportRequest):
         "date": request.date.model_dump(),
         "total": request.total.model_dump(),
         "enrollments": [item.model_dump() for item in request.enrollments],
-        "labels": request.labels,
+        "labels": request.labels.model_dump(),
+
+        
         
     }
 
     job_data = {
         "job_type": "report",  # <-- CRITICAL: This tells the worker how to process the job
-        "template_path": "templates/report_template_fixed.docx",
+        "template_path": "templates/report_template.docx",
         "output_dir": "temp_reports", # A separate directory for generated reports
         "userId": request.user.userId, # For saving the file reference later
         "context": context,

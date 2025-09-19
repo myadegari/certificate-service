@@ -1,4 +1,4 @@
-from typing import Optional,List
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -31,7 +31,7 @@ class ReportRequest(BaseModel):
     user: User
     issuedAt: str
     enrollments: List[EnrollmentItem]
-    labels:List[str]
+    labels:EnrollmentItem
     date:ReportDate
     total:TotalEnrollments
     reportuniqueid:str

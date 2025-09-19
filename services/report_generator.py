@@ -1,9 +1,10 @@
 import asyncio
 import os
 from pathlib import Path
+
 from docxtpl import DocxTemplate
-import win32com.client
 import pythoncom
+import win32com.client
 
 
 async def generate_enrollment_report(template_path: str, output_dir: str, context: dict) -> str:
