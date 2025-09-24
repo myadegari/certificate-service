@@ -10,7 +10,7 @@ from aio_pika.abc import AbstractIncomingMessage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from redis import asyncio as aioredis
 
@@ -67,59 +67,41 @@ async def cleanup_temp_files():
                     print(f"❌ Error deleting {file_path}: {e}")
 
 
-async def consume_notifications():
-    """Async RabbitMQ consumer using aio-pika"""
-    connection_string = f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST}:{RABBITMQ_PORT or 5672}/{RABBITMQ_VHOST or '%2F'}"
-    try:
-        # Connect to RabbitMQ
-        connection = await aio_pika.connect_robust(connection_string)
-        print("Connected to RabbitMQ for notifications")
+async def consume_notifications(redis_client):
+    """Consume status updates from RabbitMQ and push to WebSocket clients."""
+    from aio_pika import connect_robust
+    from aio_pika.abc import AbstractIncomingMessage
 
-        async with connection:
-            channel = await connection.channel()
-            await channel.set_qos(prefetch_count=1)
+    connection_string = f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST}:{RABBITMQ_PORT}/{RABBITMQ_VHOST}"
+    connection = await connect_robust(connection_string)
+    print("✅ Connected to RabbitMQ (notifications consumer)")
 
-            # Declare queue
-            queue = await channel.declare_queue(
-                RABBITMQ_NOTIFICATION_QUEUE, durable=True
-            )
+    async with connection:
+        channel = await connection.channel()
+        queue = await channel.declare_queue(RABBITMQ_NOTIFICATION_QUEUE, durable=True)
 
-            async def process_message(message: AbstractIncomingMessage):
-                async with message.process():
-                    try:
-                        body = message.body.decode("utf-8")
-                        data = json.loads(body)
-                        job_id = data.get("job_id")
+        async def process_message(message: AbstractIncomingMessage):
+            async with message.process():
+                try:
+                    body = message.body.decode()
+                    data = json.loads(body)
+                    job_id = data.get("job_id")
+                    if not job_id:
+                        return
+                    # Broadcast to all WebSocket clients for this job
+                    clients = websocket_clients.get(job_id, [])
+                    for ws in list(clients):  # copy to avoid mutation during iteration
+                        try:
+                            await ws.send_json(data)
+                        except Exception:
+                            # Client likely disconnected; will be cleaned up on disconnect
+                            pass
+                except Exception as e:
+                    print(f"❌ Error processing notification: {e}")
 
-                        if not job_id:
-                            print("Message missing job_id, skipping")
-                            return
-
-                        # Broadcast to all connected WebSocket clients for this job
-                        if job_id in websocket_clients:
-                            for ws in websocket_clients[job_id]:
-                                try:
-                                    await ws.send_json(data)
-                                    print(
-                                        f"Sent update to WebSocket client for job {job_id}: {data['status']}"
-                                    )
-                                except Exception as e:
-                                    print(f"Error sending to WebSocket: {e}")
-
-                    except json.JSONDecodeError:
-                        print(f"Invalid JSON: {message.body[:100]}")
-                    except Exception as e:
-                        print(f"Error processing message: {e}")
-
-            print("Starting to consume notifications...")
-            await queue.consume(process_message)
-
-            # Keep consumer alive
-            await asyncio.Future()  # Run forever
-
-    except Exception as e:
-        print(f"RabbitMQ consumer error: {e}")
-        raise Exception("Failed to connect to RabbitMQ")
+        await queue.consume(process_message)
+        print("👂 Listening for notifications...")
+        await asyncio.Future()  # run forever
 
 
 @asynccontextmanager
@@ -129,7 +111,7 @@ async def lifespan(app: FastAPI):
         REDIS_URL, decode_responses=True, encoding="utf-8"
     )
         # Start RabbitMQ consumer task
-    consumer_task = asyncio.create_task(consume_notifications())
+    app.state.notification_task = asyncio.create_task(consume_notifications(app.state.redis))
     print("✅ Application started - RabbitMQ notification consumer running")
 
     scheduler = AsyncIOScheduler()
@@ -160,9 +142,9 @@ async def lifespan(app: FastAPI):
     # Shutdown
     print("🛑 Shutting down - cancelling consumer...")
     scheduler.shutdown()
-    consumer_task.cancel()
+    app.state.notification_task.cancel()
     try:
-        await consumer_task
+        await app.state.notification_task
     except asyncio.CancelledError:
         pass
 
@@ -184,6 +166,18 @@ app.add_middleware(
 app.include_router(certificates_router, prefix="/certificates", tags=["certificates"])
 app.include_router(reports_router, prefix="/reports", tags=["reports"])
 
+@app.get("/certificates/status/{job_id}")
+async def get_status(job_id: str):
+    """
+    REST API endpoint to get the status of a specific job.
+    This is used for initial status check on page load.
+    """
+    status_data = await get_job_status_from_db(job_id)
+    if not status_data:
+        raise HTTPException(status_code=404, detail="Job status not found.")
+    return status_data
+
+
 
 async def get_job_status(job_id: str) -> dict:
     """Get current job status from Redis"""
@@ -204,57 +198,39 @@ async def get_job_status(job_id: str) -> dict:
 
 @app.websocket("/ws/certificates")
 async def websocket_endpoint(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time certificate status updates.
+    """
     await websocket.accept()
-
     job_id = websocket.query_params.get("job_id")
     if not job_id:
-        await websocket.close(code=1008, reason="job_id is required")
+        await websocket.close(code=1008, reason="Job ID not provided")
         return
 
+    # Add the client to our list for this job
+    if job_id not in websocket_clients:
+        websocket_clients[job_id] = []
+    websocket_clients[job_id].append(websocket)
+
+    print(f"WebSocket client connected for job: {job_id}")
+
     try:
-        # Send initial status
-        initial_status = await get_job_status(job_id)
-        await websocket.send_json(initial_status)
-
-        # Close immediately if status is already completed
-        if initial_status.get("status") == "completed":
-            await websocket.close(code=1000, reason="Job already completed")
-            return
-
-        # Register client
-        if job_id not in websocket_clients:
-            websocket_clients[job_id] = []
-        websocket_clients[job_id].append(websocket)
-
-        # Keep connection alive and handle ping/pong
+        # Listen for messages from the client.
+        # This loop will keep the connection open.
         while True:
-            try:
-                data = await websocket.receive_json()
-                if data.get("type") == "ping":
-                    await websocket.send_json({"type": "pong"})
-                elif data.get("type") == "status":
-                    current_status = await get_job_status(job_id)
-                    await websocket.send_json(current_status)
-
-                    # Close connection if job is completed
-                    if current_status.get("status") == "completed":
-                        await websocket.close(code=1000, reason="Job completed")
-                        break
-                else:
-                    print(f"Received message: {data}")
-            except json.JSONDecodeError:
-                continue
-            except WebSocketDisconnect:
-                break
-
+            # We don't need to process incoming messages from the client for this use case.
+            # We just need to keep the connection alive.
+            # If a client sends a message, we can just acknowledge it.
+            await websocket.receive_text()
     except WebSocketDisconnect:
         print(f"Client disconnected for job_id: {job_id}")
     except Exception as e:
         print(f"WebSocket error for job_id {job_id}: {str(e)}")
     finally:
-        # Cleanup
+        # Cleanup when the connection closes
         if job_id in websocket_clients:
             if websocket in websocket_clients[job_id]:
                 websocket_clients[job_id].remove(websocket)
             if not websocket_clients[job_id]:
                 del websocket_clients[job_id]
+        print(f"🔌 WebSocket disconnected for job: {job_id}")
