@@ -13,25 +13,36 @@ class User(BaseModel):
 
 
 class EnrollmentItem(BaseModel):
-    course_name:str
-    course_org:str
-    course_date:str
-    course_duration:str
-    issuedAt:str
+    course_name: str
+    course_org: str
+    course_date: str
+    course_duration: str
+    issuedAt: str
+
+
+class ReportLabels(BaseModel):
+    course_name: str
+    course_org: str
+    course_date: str
+    course_duration: str
+    issuedAt: str
+
 
 class ReportDate(BaseModel):
-    year:str
-    issue:str
+    year: str
+    issue: str
+
 
 class TotalEnrollments(BaseModel):
-    duration:str
-    count:str
-    
+    duration: str
+    count: str
+
+
 class ReportRequest(BaseModel):
     user: User
     issuedAt: str
     enrollments: List[EnrollmentItem]
-    labels:EnrollmentItem
-    date:ReportDate
-    total:TotalEnrollments
-    reportuniqueid:str
+    labels: ReportLabels
+    date: ReportDate
+    total: TotalEnrollments
+    reportuniqueid: str

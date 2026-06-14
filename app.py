@@ -3,15 +3,18 @@ from contextlib import asynccontextmanager
 import json
 import os
 from pathlib import Path
+import time
 from typing import Dict
+from urllib.parse import quote_plus
 
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from redis import asyncio as aioredis
 
 from api.endpoints.certificates import router as certificates_router
@@ -33,10 +36,10 @@ RABBITMQ_JOB_QUEUE = os.getenv("RABBITMQ_JOB_QUEUE", "")
 RABBITMQ_NOTIFICATION_QUEUE = os.getenv("RABBITMQ_NOTIFICATION_QUEUE", "")
 
 # Redis connection settings
-REDIS_HOST = os.getenv("REDIS_HOST", "")
-REDIS_PORT = os.getenv("REDIS_PORT", "")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = os.getenv("REDIS_PORT", "6379")
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}"
+REDIS_URL = f"redis://:{quote_plus(REDIS_PASSWORD)}@{REDIS_HOST}:{REDIS_PORT}" if REDIS_PASSWORD else f"redis://{REDIS_HOST}:{REDIS_PORT}"
 
 TEMP_DIRS = [
     "tmp",  # where QR codes, images, etc. are stored
@@ -48,7 +51,7 @@ websocket_clients: Dict[str, list[WebSocket]] = {}
 
 async def cleanup_temp_files():
     """Delete files older than 48 hours in temp directories"""
-    cutoff_time = asyncio.get_event_loop().time() - (48 * 3600)
+    cutoff_time = time.time() - (48 * 3600)
 
     for temp_dir in TEMP_DIRS:
         dir_path = Path(temp_dir)
@@ -72,7 +75,7 @@ async def consume_notifications(redis_client):
     from aio_pika import connect_robust
     from aio_pika.abc import AbstractIncomingMessage
 
-    connection_string = f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST}:{RABBITMQ_PORT}/{RABBITMQ_VHOST}"
+    connection_string = f"amqp://{quote_plus(RABBITMQ_USER)}:{quote_plus(RABBITMQ_PASS)}@{RABBITMQ_HOST}:{RABBITMQ_PORT}/{quote_plus(RABBITMQ_VHOST)}"
     connection = await connect_robust(connection_string)
     print("✅ Connected to RabbitMQ (notifications consumer)")
 
@@ -157,14 +160,37 @@ app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "*"],  # Replace with your Next.js app URL
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(certificates_router, prefix="/certificates", tags=["certificates"])
-app.include_router(reports_router, prefix="/reports", tags=["reports"])
+# Optional API key auth
+API_KEY = os.getenv("API_KEY", "")
+API_REQUIRE_AUTH = os.getenv("API_REQUIRE_AUTH", "false").lower() == "true"
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def verify_api_key(x_api_key: str = Depends(api_key_header)):
+    if API_KEY and API_REQUIRE_AUTH:
+        if not x_api_key or x_api_key != API_KEY:
+            raise HTTPException(status_code=403, detail="Invalid or missing API key")
+    elif API_KEY and not x_api_key:
+        print("Warning: API key not sent by client. Set API_REQUIRE_AUTH=true to enforce.")
+    return True
+
+app.include_router(
+    certificates_router,
+    prefix="/certificates",
+    tags=["certificates"],
+    dependencies=[Depends(verify_api_key)],
+)
+app.include_router(
+    reports_router,
+    prefix="/reports",
+    tags=["reports"],
+    dependencies=[Depends(verify_api_key)],
+)
 
 @app.get("/certificates/status/{job_id}")
 async def get_status(job_id: str):
@@ -177,23 +203,6 @@ async def get_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job status not found.")
     return status_data
 
-
-
-async def get_job_status(job_id: str) -> dict:
-    """Get current job status from Redis"""
-    try:
-        # --- NEW: Check MongoDB first ---
-        db_status = await get_job_status_from_db(job_id)
-        if db_status:
-            return db_status
-        # --- END NEW ---
-        redis_status = await app.state.redis.get(f"job_status:{job_id}")
-        if redis_status:
-            return json.loads(redis_status)
-        return {"job_id": job_id, "status": "pending"}
-    except Exception as e:
-        print(f"Error getting job status from Redis: {str(e)}")
-        return {"job_id": job_id, "status": "unknown"}
 
 
 @app.websocket("/ws/certificates")

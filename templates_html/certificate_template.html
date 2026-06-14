@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <style>
+    @page {
+      size: 800px 565px;
+      margin: 0;
+    }
+    @font-face { font-family: Shabnam; src: url('../fonts/Shabnam-FD.woff2') format('woff2'), url('../fonts/Shabnam-FD.ttf') format('truetype'); }
+    @font-face { font-family: Shabnam-Bold; src: url('../fonts/Shabnam-Bold-FD.woff2') format('woff2'), url('../fonts/Shabnam-Bold-FD.ttf') format('truetype'); }
+    @font-face { font-family: Shabnam-Light; src: url('../fonts/Shabnam-Light-FD.woff2') format('woff2'), url('../fonts/Shabnam-Light-FD.ttf') format('truetype'); }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: Shabnam, Tahoma, sans-serif;
+      width: 800px;
+      height: 565px;
+      position: relative;
+      background: #fff;
+      border: 8px solid #c8a96e;
+      padding: 30px 40px;
+      overflow: hidden;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 15px;
+      padding-bottom: 15px;
+      border-bottom: 2px solid #c8a96e;
+    }
+    .header .logo { height: 60px; margin-bottom: 5px; }
+    .title {
+      font-family: Shabnam-Bold;
+      font-size: 22px;
+      color: #1a3c6e;
+      margin-bottom: 20px;
+    }
+    .body-text {
+      font-size: 14px;
+      line-height: 2.8;
+      text-align: center;
+    }
+    .body-text strong { font-family: Shabnam-Bold; }
+    .footer {
+      position: absolute;
+      bottom: 30px;
+      left: 40px;
+      right: 40px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+    .signatory { text-align: center; font-size: 11px; }
+    .signatory img { height: 50px; display: block; margin: 0 auto 5px; }
+    .stamp-area { text-align: center; }
+    .stamp-area img { height: 70px; }
+    .qr-area { position: absolute; left: 50px; bottom: 100px; text-align: center; }
+    .qr-area img { width: 70px; }
+    .field-label { color: #555; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    {% if logo %}
+    <img class="logo" src="{{ logo }}" alt="logo">
+    {% endif %}
+  </div>
+
+  <div class="title">گواهینامه شرکت در دوره آموزشی</div>
+
+  <div class="body-text">
+    <span class="field-label">جناب آقای / سرکار خانم</span><br>
+    <strong>{{ name }}</strong><br>
+    <span class="field-label">کد ملی:</span> {{ national }}<br>
+    <span class="field-label">دوره:</span> <strong>{{ course }}</strong><br>
+    <span class="field-label">واحد برگزارکننده:</span> {{ org }}<br>
+    <span class="field-label">تاریخ برگزاری:</span> {{ date }} &nbsp;|&nbsp; <span class="field-label">مدت:</span> {{ time }}<br><br>
+    <span class="field-label">شماره گواهینامه:</span> <strong>{{ number }}</strong><br>
+    <span class="field-label">تاریخ صدور:</span> {{ issue }}
+  </div>
+
+  <div class="footer">
+    <div class="signatory">
+      {% if signatory_signature %}
+      <img src="{{ signatory_signature }}" alt="امضاء">
+      {% endif %}
+      <div>{{ signatory }}</div>
+      <div style="font-size:10px; color:#777;">{{ position }}</div>
+    </div>
+    <div class="stamp-area">
+      {% if stamp %}
+      <img src="{{ stamp }}" alt="مهر واحد">
+      {% endif %}
+    </div>
+  </div>
+
+  {% if qr_url %}
+  <div class="qr-area">
+    <img src="{{ qr_url }}" alt="QR">
+  </div>
+  {% endif %}
+</body>
+</html>

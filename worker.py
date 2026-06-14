@@ -1,22 +1,20 @@
 import asyncio
 import json
 import os
-from pathlib import Path
 import time
 
 import aio_pika
-from aio_pika import Message as AioPikaMessage  # Optional, for clarity
 from aio_pika.abc import AbstractIncomingMessage
 from dotenv import load_dotenv
-import redis
+from redis import asyncio as aioredis
 
 from core.storage import upload_pdf_to_minio_and_save_to_db, upsert_job_status_in_db
 from services.certification_generator import (
-    convert_to_pdf,
-    generate_certificate,
+    generate_certificate_pdf,
+    generate_qr_code,
     safe_image,
 )
-from services import report_generator # <-- ADD THIS IMPORT
+from services import report_generator
 
 load_dotenv()
 
@@ -28,15 +26,14 @@ RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
 RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "guest")
 RABBITMQ_JOB_QUEUE = os.getenv("RABBITMQ_JOB_QUEUE", "certificate_jobs")
 RABBITMQ_NOTIFICATION_QUEUE = os.getenv(
-    "RABMQ_NOTIFICATION_QUEUE", "certificate_notifications"
+    "RABBITMQ_NOTIFICATION_QUEUE", "certificate_notifications"
 )
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = os.getenv("REDIS_PORT", "6379")
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 
-# Redis client (sync, since we're using it in async context — fine for simple ops)
-redis_client = redis.Redis(
+redis_client = aioredis.Redis(
     host=REDIS_HOST,
     port=int(REDIS_PORT),
     password=REDIS_PASSWORD,
@@ -62,7 +59,7 @@ async def publish_notification(
 
     # Store in Redis first
     try:
-        redis_client.setex(f"job_status:{job_id}", 86400, json.dumps(message))
+        await redis_client.setex(f"job_status:{job_id}", 86400, json.dumps(message))
     except Exception as e:
         print(f"Error storing in Redis for job {job_id}: {str(e)}")
     if status in ["completed", "failed"]:
@@ -133,7 +130,7 @@ async def process_job(message: AbstractIncomingMessage):
             print(f"🔧 Processing job {job_id} of type '{job_type}'")
             await publish_notification(job_id, "processing")
 
-            redis_client.setex(
+            await redis_client.setex(
                 f"job_status:{job_id}",
                 86400,
                 json.dumps(
@@ -143,39 +140,71 @@ async def process_job(message: AbstractIncomingMessage):
             pdf_path = None # Initialize pdf_path variable
              # --- JOB ROUTER ---
             if job_type == "certificate":
+                # Download images
                 image_data = await process_images(data)
+                text_data = data["text_data"]
+                qr_data = data.get("qr_data", {})
 
-                print("🎨 Generating PPTX...")
-                pptx_path = await generate_certificate(
-                    template_path=data["template_path"],
-                    output_dir=data["output_dir"],
-                    text_data=data["text_data"],
-                    image_data=image_data,
-                    qr_data=data["qr_data"],
+                # Generate QR code if needed
+                local_qr = None
+                if qr_data:
+                    os.makedirs("tmp", exist_ok=True)
+                    qr_url = qr_data.get("url", "")
+                    local_qr = os.path.join("tmp", f"qr_{abs(hash(qr_url))}.png")
+                    generate_qr_code(qr_url, local_qr)
+
+                # Build Jinja2 context
+                context = {
+                    "name": text_data.get("name", ""),
+                    "national": text_data.get("national", ""),
+                    "course": text_data.get("course", ""),
+                    "org": text_data.get("org", ""),
+                    "date": text_data.get("date", ""),
+                    "time": text_data.get("time", ""),
+                    "issue": text_data.get("issue", ""),
+                    "unique": text_data.get("unique", ""),
+                    "number": text_data.get("number", ""),
+                    "signatory": text_data.get("signatory", ""),
+                    "position": text_data.get("position", ""),
+                    "signatory_signature": image_data.get("logo"),
+                    "stamp": image_data.get("photo"),
+                    "qr_url": local_qr,
+                }
+                if "signatory2" in text_data:
+                    context["signatory2"] = text_data["signatory2"]
+                    context["position2"] = text_data.get("position2", "")
+                    context["signatory2_signature"] = image_data.get("logo2")
+                    context["stamp2"] = image_data.get("photo2")
+
+                template_name = (
+                    "certificate_template2.html"
+                    if "signatory2" in text_data
+                    else "certificate_template.html"
                 )
-                pptx_path = str(Path(pptx_path).resolve())
-                print(f"✅ Generated PPTX: {pptx_path}")
+                template_path = os.path.join("templates_html", template_name)
 
-                print("📄 Converting PPTX to PDF...")
-                pdf_path = await convert_to_pdf(pptx_path, data["output_dir"])
+                print("🎨 Generating PDF via WeasyPrint...")
+                pdf_path = await generate_certificate_pdf(
+                    template_path=template_path,
+                    output_dir=data["output_dir"],
+                    context=context,
+                )
                 print(f"✅ Generated PDF: {pdf_path}")
-                # ✅ --- UPLOAD TO MINIO + SAVE TO MONGODB ---
             elif job_type == "report":
-                print("📄 Generating Report...")
-                # --- NEW LOGIC FOR REPORTS ---
-                docx_path = await report_generator.generate_enrollment_report(
-                    template_path=data["template_path"],
+                print("📄 Generating Report via WeasyPrint...")
+                template_path = "templates_html/report_template.html"
+                pdf_path = await report_generator.generate_report_pdf(
+                    template_path=template_path,
                     output_dir=data["output_dir"],
-                    context=data["context"]
+                    context=data["context"],
                 )
-                pdf_path = await report_generator.convert_word_to_pdf(docx_path, data["output_dir"])
             
             else:
                 raise ValueError(f"Unknown job_type: {job_type}")
             
             print(f"☁️ Uploading final PDF: {pdf_path}")
             file_id = await upload_pdf_to_minio_and_save_to_db(
-                pdf_path, job_id,job_type,data.get("courseCode",""), data["userId"]
+                pdf_path, job_id, job_type, data.get("courseCode", ""), data.get("userId", "")
             )
             if not file_id:
                 raise Exception("Failed to upload PDF to storage")
@@ -185,8 +214,16 @@ async def process_job(message: AbstractIncomingMessage):
         except Exception as e:
             error_msg = str(e)
             print(f"❌ Error processing job {job_id}: {error_msg}")
-            await publish_notification(job_id, "failed", error_message=error_msg)
-            raise  # Triggers NACK + requeue
+            retry_count = await redis_client.incr(f"job_retry:{job_id}")
+            await redis_client.expire(f"job_retry:{job_id}", 86400)
+            if retry_count <= 3:
+                print(f"⏳ Retry {retry_count}/3 for job {job_id}")
+                await publish_notification(job_id, "retrying", error_message=error_msg)
+                raise  # NACK + requeue
+            else:
+                print(f"⛔ Max retries reached for job {job_id}. Sending to dead letter.")
+                await publish_notification(job_id, "failed", error_message=error_msg)
+                # Ack the message (don't requeue) by not raising
 
 
 # ================================

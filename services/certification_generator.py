@@ -1,12 +1,7 @@
-import asyncio
 import os
-import re
 
 import aiofiles
 import aiohttp
-import comtypes
-from pptx import Presentation
-from pptxtopdf import convert
 import qrcode
 
 from core.storage import get_file_presigned_url
@@ -26,114 +21,23 @@ def generate_qr_code(data: str, save_path: str):
         img.save(f)
 
 
-def add_qr_to_placeholder(slide, qr_data, qr_output_dir="tmp"):
-    if not os.path.exists(qr_output_dir):
-        os.makedirs(qr_output_dir)
-    for shape in slide.shapes:
-        if not shape.has_text_frame:
-            continue
-        text = shape.text
-        image_placeholders = re.findall(r"{{qr:(.*?)}}", text)
-        if image_placeholders:
-            for img_key in image_placeholders:
-                if img_key in qr_data:
-                    data = qr_data[img_key]
-                    qr_path = os.path.join(qr_output_dir, f"qr_{hash(data)}.png")
-                    generate_qr_code(data, qr_path)
-                    left, top, width, height = (
-                        shape.left,
-                        shape.top,
-                        shape.width,
-                        shape.height,
-                    )
-                    shape._element.getparent().remove(shape._element)
-                    slide.shapes.add_picture(qr_path, left, top, width, height)
-                    break
+async def generate_certificate_pdf(template_path, output_dir, context):
+    from jinja2 import Environment, FileSystemLoader
+    import weasyprint
 
+    template_dir = os.path.dirname(template_path)
+    template_name = os.path.basename(template_path)
 
-def replace_placeholder_preserve_style(shape, data):
-    if not shape.has_text_frame:
-        return
-    for paragraph in shape.text_frame.paragraphs:
-        for run in paragraph.runs:
-            for key, value in data.items():
-                placeholder = f"{{{{{key}}}}}"
-                if placeholder in run.text:
-                    run.text = run.text.replace(placeholder, value)
+    env = Environment(loader=FileSystemLoader(template_dir))
+    template = env.get_template(template_name)
+    html_str = template.render(**context)
 
+    os.makedirs(output_dir, exist_ok=True)
+    unique_id = (context.get("unique") or "filled").replace(" ", "_")
+    pdf_path = os.path.join(output_dir, f"certificate_{unique_id}.pdf")
 
-def add_image_to_placeholder(slide, image_data):
-    for shape in slide.shapes:
-        if not shape.has_text_frame:
-            continue
-        text = shape.text
-        image_placeholders = re.findall(r"{{image:(.*?)}}", text)
-        if image_placeholders:
-            for img_key in image_placeholders:
-                if img_key in image_data:
-                    img_path = image_data[img_key]
-                    # if not os.path.exists(img_path):
-                    #     img_path = "services/n-image.png"
-                    left = shape.left
-                    top = shape.top
-                    width = shape.width
-                    height = shape.height
-                    shape._element.getparent().remove(shape._element)
-                    slide.shapes.add_picture(img_path, left, top, width, height)
-                    break
-
-
-async def generate_certificate(
-    template_path, output_dir, text_data, image_data=None, qr_data=None
-):
-    if image_data is None:
-        image_data = {}
-    if qr_data is None:
-        qr_data = {}
-    prs = Presentation(template_path)
-    slide = prs.slides[0]
-    if image_data:
-        add_image_to_placeholder(slide, image_data)
-    if qr_data:
-        add_qr_to_placeholder(slide, qr_data)
-    for shape in slide.shapes:
-        replace_placeholder_preserve_style(shape, text_data)
-    output_filename = (
-        f"certificate_{text_data.get('unique', 'filled').replace(' ', '_')}"
-    )
-    output_pptx = os.path.join(output_dir, f"{output_filename}.pptx")
-    prs.save(output_pptx)
-    return output_pptx
-
-
-async def convert_to_pdf(pptx_path, output_dir):
-    loop = asyncio.get_running_loop()
-
-    def windows_convert():
-        comtypes.CoInitialize()
-        try:
-            # powerpoint = comtypes.client.CreateObject("PowerPoint.Application")
-            # Do not set Visible = False to avoid error
-            try:
-                print(f"Opening PPTX: {pptx_path}")
-                # ppt = powerpoint.Presentations.Open(pptx_path, WithWindow=0)  # Minimize window
-                base_filename = os.path.splitext(os.path.basename(pptx_path))[0]
-                print(f"Generated PDF: {output_dir}")
-                output_path = os.path.join(output_dir, f"{base_filename}.pdf")
-                convert(pptx_path, output_dir)
-                # ppt.SaveAs(output_path, 32)  # 32 = PDF
-                # ppt.Close()
-            except Exception as e:
-                raise Exception(f"PowerPoint error: {str(e)}")
-            # finally:
-            # powerpoint.Quit()
-        finally:
-            comtypes.CoUninitialize()
-        if os.path.exists(pptx_path):
-            os.remove(pptx_path)  # Cleanup PPTX
-        return output_path
-
-    return await loop.run_in_executor(None, windows_convert)
+    weasyprint.HTML(string=html_str).write_pdf(pdf_path)
+    return pdf_path
 
 
 async def get_image(image_path: str):
@@ -158,18 +62,14 @@ async def safe_image(image_path: str) -> str:
         try:
             image_content = await get_image(image_path)
             if image_content:
-                # Create services directory if it doesn't exist
                 os.makedirs("tmp", exist_ok=True)
-
-                # Keep the original path structure but save in services directory
                 save_path = os.path.join("tmp", os.path.basename(image_path))
                 async with aiofiles.open(save_path, "wb") as img_file:
                     await img_file.write(image_content)
                 return save_path
             else:
-                return "services/n-image.png"
+                return os.path.join(os.path.dirname(__file__), "n-image.png")
         except Exception as e:
             print(f"Error retrieving image {image_path}: {str(e)}")
-            return "services/n-image.png"
+            return os.path.join(os.path.dirname(__file__), "n-image.png")
     return original_path
-    # return image_path if os.path.exists(image_path) else "services/n-image.png"

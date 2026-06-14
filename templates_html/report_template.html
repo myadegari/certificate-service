@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <style>
+    @page {
+      size: A4;
+      margin: 2cm 1.5cm;
+    }
+    @font-face { font-family: Shabnam; src: url('../fonts/Shabnam-FD.woff2') format('woff2'), url('../fonts/Shabnam-FD.ttf') format('truetype'); }
+    @font-face { font-family: Shabnam-Bold; src: url('../fonts/Shabnam-Bold-FD.woff2') format('woff2'), url('../fonts/Shabnam-Bold-FD.ttf') format('truetype'); }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: Shabnam, Tahoma, sans-serif;
+      font-size: 12px;
+      color: #222;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 3px solid #1a3c6e;
+    }
+    .header .title {
+      font-family: Shabnam-Bold;
+      font-size: 18px;
+      color: #1a3c6e;
+    }
+    .header .subtitle {
+      font-size: 12px;
+      color: #666;
+      margin-top: 5px;
+    }
+    .info-section {
+      margin-bottom: 20px;
+      line-height: 2;
+    }
+    .info-section .label { color: #666; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 15px;
+    }
+    th {
+      font-family: Shabnam-Bold;
+      background: #1a3c6e;
+      color: #fff;
+      padding: 8px 6px;
+      font-size: 11px;
+      text-align: center;
+    }
+    td {
+      padding: 6px;
+      text-align: center;
+      border: 1px solid #ccc;
+      font-size: 11px;
+    }
+    tr:nth-child(even) { background: #f5f7fa; }
+    .total-row td {
+      font-family: Shabnam-Bold;
+      background: #e8edf5;
+      border-top: 2px solid #1a3c6e;
+    }
+    .footer {
+      margin-top: 30px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #555;
+      border-top: 1px solid #ccc;
+      padding-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">گزارش دوره‌های آموزشی</div>
+    <div class="subtitle">سال {{ date.year }}</div>
+  </div>
+
+  <div class="info-section">
+    <span class="label">{{ gender }}</span>
+    <strong>{{ name }}</strong><br>
+    <span class="label">کد ملی:</span> {{ national }}<br>
+    <span class="label">شماره گزارش:</span> {{ number }}
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>{{ labels.course_name }}</th>
+        <th>{{ labels.course_org }}</th>
+        <th>{{ labels.course_date }}</th>
+        <th>{{ labels.course_duration }}</th>
+        <th>{{ labels.issuedAt }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in enrollments %}
+      <tr>
+        <td>{{ e.course_name }}</td>
+        <td>{{ e.course_org }}</td>
+        <td>{{ e.course_date }}</td>
+        <td>{{ e.course_duration }}</td>
+        <td>{{ e.issuedAt }}</td>
+      </tr>
+      {% endfor %}
+      <tr class="total-row">
+        <td colspan="2"><strong>جمع کل</strong></td>
+        <td></td>
+        <td>{{ total.duration }}</td>
+        <td>{{ total.count }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    <span>تاریخ صدور: {{ date.issue }}</span>
+    <span>شماره گزارش: {{ number }}</span>
+  </div>
+</body>
+</html>
