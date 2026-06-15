@@ -1,102 +1,261 @@
-<!DOCTYPE html>
-<html dir="rtl">
+<!doctype html>
+<html lang="fa">
+
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8" />
+  <!--
+    WeasyPrint compatibility notes:
+    - Google Fonts loaded via @import so WeasyPrint fetches them at render time.
+      For offline use, host the font locally and use @font-face with a file:// URL.
+    - box-shadow removed (not supported).
+    - font-optical-sizing removed (not supported).
+    - aspect-ratio replaced with explicit width + height on .qr-area.
+    - height: fit-content replaced with height: auto.
+    - place-content replaced with align-content + justify-content.
+    - transform: rotate on .unique-code is supported in WeasyPrint 53+.
+      If it does not render, replace with writing-mode: vertical-rl (see comment in CSS).
+  -->
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Parastoo:wght@400;700&display=swap');
+
     @page {
-      size: 800px 565px;
       margin: 0;
+      size: A4 landscape;
     }
-    @font-face { font-family: Shabnam; src: url('../fonts/Shabnam-FD.woff2') format('woff2'), url('../fonts/Shabnam-FD.ttf') format('truetype'); }
-    @font-face { font-family: Shabnam-Bold; src: url('../fonts/Shabnam-Bold-FD.woff2') format('woff2'), url('../fonts/Shabnam-Bold-FD.ttf') format('truetype'); }
-    @font-face { font-family: Shabnam-Light; src: url('../fonts/Shabnam-Light-FD.woff2') format('woff2'), url('../fonts/Shabnam-Light-FD.ttf') format('truetype'); }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+
     body {
-      font-family: Shabnam, Tahoma, sans-serif;
-      width: 800px;
-      height: 565px;
+      margin: 0;
+      font-family: "Parastoo", serif;
+      /* font-optical-sizing: auto; — REMOVED: not supported by WeasyPrint */
+      font-weight: 400;
+      font-style: normal;
+      direction: rtl;
+    }
+
+    body h1 {
+      color: #ff4a5a;
+    }
+
+    .main {
+      background-color: white;
+      width: 297mm;
+      height: 210mm;
       position: relative;
-      background: #fff;
-      border: 8px solid #c8a96e;
-      padding: 30px 40px;
       overflow: hidden;
     }
-    .header {
-      text-align: center;
-      margin-bottom: 15px;
-      padding-bottom: 15px;
-      border-bottom: 2px solid #c8a96e;
-    }
-    .header .logo { height: 60px; margin-bottom: 5px; }
-    .title {
-      font-family: Shabnam-Bold;
-      font-size: 22px;
-      color: #1a3c6e;
-      margin-bottom: 20px;
-    }
-    .body-text {
-      font-size: 14px;
-      line-height: 2.8;
-      text-align: center;
-    }
-    .body-text strong { font-family: Shabnam-Bold; }
-    .footer {
+
+    .right {
       position: absolute;
-      bottom: 30px;
-      left: 40px;
-      right: 40px;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 10%;
+    }
+
+    .right .unique-code {
+      position: absolute;
+      top: 50%;
+      right: 20%;
+      /* WeasyPrint 53+ supports transform + transform-origin.
+         If the text does not rotate, replace with:
+           writing-mode: vertical-rl;
+           text-orientation: mixed;
+         and remove transform / transform-origin. */
+      transform: rotate(90deg);
+      transform-origin: right center;
+      font-size: 8px;
+      color: #1FC74F;
+      font-family: "Courier New", monospace;
+      white-space: nowrap;
+      letter-spacing: 0.5px;
+    }
+
+    .panel {
+      position: absolute;
+      right: 4%;
+      top: 0;
+      bottom: 0;
+      background: white;
+      border-radius: 0 50px 50px 0;
+      width: 100%;
+      padding: 20px;
+      /* box-shadow removed — not supported by WeasyPrint */
+    }
+
+    .panel::after {
+      content: "";
+      position: absolute;
+      left: 0%;
+      top: 0;
+      bottom: 0;
+      width: 100%;
+      background-image: url("assets/watermark.png");
+      background-size: 45%;
+      background-repeat: no-repeat;
+      background-position: 60% 50%;
+    }
+
+    .panel .title-block {
+      position: absolute;
+      top: 6%;
+      left: 55%;
+      transform: translateX(-50%);
+      display: grid;
+      /* place-content: center — REPLACED for WeasyPrint */
+      align-content: center;
+      justify-content: center;
+      text-align: center;
+      gap: 10px;
+    }
+
+    .panel .title-block .basmala {
+      font-size: 1.3rem;
+      font-weight: bold;
+    }
+
+    .panel .title-block .main-title {
+      font-size: 1.8rem;
+      font-weight: bold;
+    }
+
+    .panel .logo {
+      width: 12%;
+      height: auto;
+    }
+
+    .panel .info {
+      position: absolute;
+      left: 7%;
+      top: 4%;
+      padding: 25px 30px;
+      border-radius: 0 25px 25px 0;
+      width: 15%;
+      /* height: fit-content — REPLACED: better WeasyPrint support */
+      height: auto;
+      color: white;
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+      font-size: 1.5rem;
+      font-weight: bold;
+      overflow: hidden;
+    }
+
+    .panel .info > div {
       display: flex;
       justify-content: space-between;
-      align-items: flex-end;
     }
-    .signatory { text-align: center; font-size: 11px; }
-    .signatory img { height: 50px; display: block; margin: 0 auto 5px; }
-    .stamp-area { text-align: center; }
-    .stamp-area img { height: 70px; }
-    .qr-area { position: absolute; left: 50px; bottom: 100px; text-align: center; }
-    .qr-area img { width: 70px; }
-    .field-label { color: #555; }
+
+    .panel .body-text {
+      padding: 20px 100px;
+      font-size: 1.5rem;
+      line-height: 1.8;
+      position: absolute;
+      width: 70%;
+      top: 30%;
+      right: 0%;
+      transform: translateX(-5%);
+    }
+
+    .panel .signatory-block {
+      position: absolute;
+      bottom: 9%;
+      left: 30%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .panel .signatory-block img {
+      position: absolute;
+      top: -60%;
+    }
+
+    .panel .qr-area {
+      position: absolute;
+      right: 13%;
+      bottom: 15%;
+      /* aspect-ratio: 1/1 — REPLACED with explicit dimensions */
+      width: 35mm;
+      height: 35mm;
+    }
+
+    .panel .qr-area img {
+      width: 100%;
+      height: 100%;
+    }
+
+    .stripe {
+      background: repeating-linear-gradient(
+        -45deg,
+        #148335 0px,
+        #148335 2px,
+        #16973F 4px,
+        #16973F 8px
+      );
+    }
   </style>
 </head>
+
 <body>
-  <div class="header">
-    {% if logo %}
-    <img class="logo" src="{{ logo }}" alt="logo">
-    {% endif %}
-  </div>
 
-  <div class="title">گواهینامه شرکت در دوره آموزشی</div>
-
-  <div class="body-text">
-    <span class="field-label">جناب آقای / سرکار خانم</span><br>
-    <strong>{{ name }}</strong><br>
-    <span class="field-label">کد ملی:</span> {{ national }}<br>
-    <span class="field-label">دوره:</span> <strong>{{ course }}</strong><br>
-    <span class="field-label">واحد برگزارکننده:</span> {{ org }}<br>
-    <span class="field-label">تاریخ برگزاری:</span> {{ date }} &nbsp;|&nbsp; <span class="field-label">مدت:</span> {{ time }}<br><br>
-    <span class="field-label">شماره گواهینامه:</span> <strong>{{ number }}</strong><br>
-    <span class="field-label">تاریخ صدور:</span> {{ issue }}
-  </div>
-
-  <div class="footer">
-    <div class="signatory">
-      {% if signatory_signature %}
-      <img src="{{ signatory_signature }}" alt="امضاء">
-      {% endif %}
-      <div>{{ signatory }}</div>
-      <div style="font-size:10px; color:#777;">{{ position }}</div>
+  <div class="main">
+    <div class="stripe right">
+      <div class="unique-code">{{ unique }}</div>
     </div>
-    <div class="stamp-area">
-      {% if stamp %}
-      <img src="{{ stamp }}" alt="مهر واحد">
+    <div class="panel">
+      <img class="logo" src="assets/logo.png" alt="logo" />
+      <div class="title-block">
+        <div class="basmala">بسمه تعالی</div>
+        <div class="main-title">گواهی شرکت در دوره آموزشی</div>
+      </div>
+      <div class="stripe info">
+        <div>
+          <span class="label">شماره:</span>
+          <span class="value">{{ number }}</span>
+        </div>
+        <div>
+          <span class="label">تاریخ: </span>
+          <span class="value">{{ issue }}</span>
+        </div>
+      </div>
+      <div class="body-text">
+        <p class="intro">گواهی می شود:</p>
+        <p>
+          <strong>{{ gender }} {{ name }}</strong>
+          به شماره ملی
+          <span class="num">{{ national }}</span>
+          در دوره
+          <strong>{{ course }}</strong>
+          که توسط
+          <strong>{{ org }}</strong>
+          مجتمع آموزش عالی لارستان
+          <strong> در تاریخ </strong>
+          <span class="num">{{ date }}</span>
+          <strong>به مدت </strong>
+          <span class="num">{{ time }}</span>
+          <strong>ساعت</strong>
+          برگزار گردید، شرکت نموده است.
+        </p>
+      </div>
+      <div class="signatory-block">
+        <div class="sig-name">{{ signatory }}</div>
+        <div class="sig-pos">{{ position }}</div>
+        <div class="sig-org">مجتمع آموزش عالی لارستان</div>
+        {% if signatory_signature %}
+        <img src="{{ signatory_signature }}" alt="امضاء">
+        {% endif %}
+      </div>
+
+      {% if qr_url %}
+      <div class="qr-area">
+        <img src="{{ qr_url }}" alt="QR">
+      </div>
       {% endif %}
+
     </div>
   </div>
 
-  {% if qr_url %}
-  <div class="qr-area">
-    <img src="{{ qr_url }}" alt="QR">
-  </div>
-  {% endif %}
 </body>
+
 </html>

@@ -150,11 +150,35 @@ async def process_job(message: AbstractIncomingMessage):
                 if qr_data:
                     os.makedirs("tmp", exist_ok=True)
                     qr_url = qr_data.get("url", "")
-                    local_qr = os.path.join("tmp", f"qr_{abs(hash(qr_url))}.png")
-                    generate_qr_code(qr_url, local_qr)
+                    local_qr_rel = os.path.join("tmp", f"qr_{abs(hash(qr_url))}.png")
+                    generate_qr_code(qr_url, local_qr_rel)
+                    # WeasyPrint needs an absolute path for local file URLs so the
+                    # <img src="..."> resolves correctly regardless of base_url.
+                    local_qr = os.path.abspath(local_qr_rel)
 
-                # Build Jinja2 context
+                # ------------------------------------------------------------------
+                # Resolve gender label (API sends "Male"/"Female", template needs
+                # the Persian honorific "آقای" / "خانم").
+                # ------------------------------------------------------------------
+                gender_raw = text_data.get("gender", "")
+                gender_label = "آقای" if gender_raw == "Male" else "خانم"
+
+                # ------------------------------------------------------------------
+                # Build Jinja2 context.
+                # Key fixes vs. previous version:
+                #   • "gender"              – mapped from text_data["gender"] and
+                #                             converted to Persian honorific above.
+                #   • "signatory_signature" – was image_data.get("logo") which maps
+                #                             to the "logo" image_data key; the API
+                #                             actually stores the signature URL under
+                #                             "signature" key in image_data.
+                #   • "stamp"               – was image_data.get("photo"); API key
+                #                             is "unitStamp".
+                #   • "qr_url"              – now an absolute path so WeasyPrint can
+                #                             resolve it as a local file URI.
+                # ------------------------------------------------------------------
                 context = {
+                    "gender": gender_label,
                     "name": text_data.get("name", ""),
                     "national": text_data.get("national", ""),
                     "course": text_data.get("course", ""),
@@ -166,15 +190,15 @@ async def process_job(message: AbstractIncomingMessage):
                     "number": text_data.get("number", ""),
                     "signatory": text_data.get("signatory", ""),
                     "position": text_data.get("position", ""),
-                    "signatory_signature": image_data.get("logo"),
-                    "stamp": image_data.get("photo"),
+                    "signatory_signature": image_data.get("signature"),  # fix: was "logo"
+                    "stamp": image_data.get("unitStamp"),                # fix: was "photo"
                     "qr_url": local_qr,
                 }
                 if "signatory2" in text_data:
                     context["signatory2"] = text_data["signatory2"]
                     context["position2"] = text_data.get("position2", "")
-                    context["signatory2_signature"] = image_data.get("logo2")
-                    context["stamp2"] = image_data.get("photo2")
+                    context["signatory2_signature"] = image_data.get("signature2")  # fix: was "logo2"
+                    context["stamp2"] = image_data.get("unitStamp2")                # fix: was "photo2"
 
                 template_name = (
                     "certificate_template2.html"

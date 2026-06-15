@@ -74,6 +74,7 @@ async def generate_certificate_endpoint(request: CertificateRequest):
         cert_id = request.certificationId or str(uuid.uuid4()).upper()
         signatory_data = prepare_signatory_data(request.course.signatory)
         text_data = {
+            "gender": "جناب آقای" if request.user.gender == "Male" else "سرکار خانم",
             "name": f"{request.user.firstName} {request.user.lastName}",
             "national": request.user.nationalId,
             "course": request.course.name,

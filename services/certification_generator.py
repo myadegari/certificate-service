@@ -36,7 +36,7 @@ async def generate_certificate_pdf(template_path, output_dir, context):
     unique_id = (context.get("unique") or "filled").replace(" ", "_")
     pdf_path = os.path.join(output_dir, f"certificate_{unique_id}.pdf")
 
-    weasyprint.HTML(string=html_str).write_pdf(pdf_path)
+    weasyprint.HTML(string=html_str, base_url=template_dir).write_pdf(pdf_path)
     return pdf_path
 
 
