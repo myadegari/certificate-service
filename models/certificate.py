@@ -1,28 +1,28 @@
-from typing import Optional
 
 from pydantic import BaseModel
 
 
 class User(BaseModel):
-    userId:Optional[str]=None
+    userId:str | None=None
     gender: str
     firstName: str
     lastName: str
     nationalId: str
-    position: Optional[str] = None
-    signature: Optional[str] = None
+    position: str | None = None
+    signature: str | None = None
 
 
 class Course(BaseModel):
+    courseId: str | None = None  # MongoDB _id, stored on the generated File
     courseCode: str
     name: str
     organizingUnit: str
     date: str
     time: str
     signatory: User
-    signatory2: Optional[User] = None
+    signatory2: User | None = None
     unitStamp: str
-    unitStamp2: Optional[str] = None
+    unitStamp2: str | None = None
 
 
 class Signatory(BaseModel):

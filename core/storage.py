@@ -1,242 +1,226 @@
-# app/core/storage.py
-from datetime import datetime, timedelta, timezone
+"""Object storage (Alarik / S3) + MongoDB persistence.
+
+Both the Next.js app and this service share:
+  - the same S3-compatible endpoint and buckets
+    (``certificate`` and ``report``),
+  - the same MongoDB ``certification`` database
+    (``files`` and ``job_statuses`` collections).
+
+The document shape written to ``files`` must stay compatible with the
+app's ``models/File.js`` schema (bucket/objectName are read by the
+public /api/verify/[id] route).
+"""
+
 import json
-import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import boto3
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
 from bson import ObjectId
-from dotenv import load_dotenv
-from minio import Minio
-from minio.error import S3Error
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import UpdateOne
 
-load_dotenv()
+from core.config import settings
 
-# --- MongoDB Setup ---
-MONGO_URI = os.getenv("MONGODB_URI")
-MONGO_DB_NAME = os.getenv("MONGODB_DB_NAME", "certification")
+# --- MongoDB ---
+mongo_client = AsyncIOMotorClient(settings.mongodb_uri)
+db = mongo_client[settings.mongodb_db_name]
+files_collection = db["files"]
+job_statuses_collection = db["job_statuses"]
 
-mongo_client = AsyncIOMotorClient(MONGO_URI)
-db = mongo_client[MONGO_DB_NAME]
-files_collection = db["files"]  # Collection where FileModel saves records
-users_collection = db["users"]
-job_statuses_collection = db["job_statuses"] # <-- New collection
-
-# --- MinIO Setup ---
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT","127.0.0.1")
-MINIO_PORT = int(os.getenv("MINIO_PORT", 9000))
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
-MINIO_USE_SSL = os.getenv("MINIO_USE_SSL", "false").lower() == "true"
-MINIO_CERT_BUCKET = os.getenv("MINIO_CERT_BUCKET", "certificates")
-MINIO_REPORT_BUCKET = os.getenv("MINIO_REPORT_BUCKET", "reports")
-
-minio_client = Minio(
-    f"{MINIO_ENDPOINT}:{MINIO_PORT}",
-    access_key=MINIO_ACCESS_KEY,
-    secret_key=MINIO_SECRET_KEY,
-    secure=MINIO_USE_SSL,
+# --- S3 (Alarik) ---
+s3_client = boto3.client(
+    "s3",
+    endpoint_url=settings.storage_endpoint,
+    region_name=settings.storage_region,
+    aws_access_key_id=settings.storage_access_key,
+    aws_secret_access_key=settings.storage_secret_key,
+    config=BotoConfig(s3={"addressing_style": "path"}),
 )
 
-# Presigned URL expiry
-EXPIRY_HOURS = 24
+PRESIGN_EXPIRY_HOURS = 24
+FILE_URL_EXPIRY = timedelta(days=7)
 
-# Ensure bucket exists
-found_cert_bucket = minio_client.bucket_exists(MINIO_CERT_BUCKET)
-found_report_bucket = minio_client.bucket_exists(MINIO_REPORT_BUCKET)
-if not found_cert_bucket:
-    minio_client.make_bucket(MINIO_CERT_BUCKET)
-    print(f"Created bucket: {MINIO_CERT_BUCKET}")
-if not found_report_bucket:
-    minio_client.make_bucket(MINIO_REPORT_BUCKET)
-    print(f"Created bucket: {MINIO_REPORT_BUCKET}")
+_ensured_buckets: set[str] = set()
+
+
+def _to_public_url(url: str) -> str:
+    """Rewrite an internally-signed URL to the public base (browser-reachable)."""
+    public_base = settings.storage_public_url.rstrip("/")
+    internal_base = settings.storage_endpoint.rstrip("/")
+    if public_base and url.startswith(internal_base):
+        return public_base + url[len(internal_base):]
+    return url
+
+
+def ensure_bucket(bucket: str) -> None:
+    """Create the bucket if it does not exist (cached per process)."""
+    if bucket in _ensured_buckets:
+        return
+    try:
+        s3_client.head_bucket(Bucket=bucket)
+    except ClientError:
+        s3_client.create_bucket(Bucket=bucket)
+        print(f"Created bucket: {bucket}")
+    _ensured_buckets.add(bucket)
+
+
+def _presigned_get_url(bucket: str, object_name: str, expiry: timedelta) -> str:
+    url = s3_client.generate_presigned_url(
+        ClientMethod="get_object",
+        Params={"Bucket": bucket, "Key": object_name},
+        ExpiresIn=int(expiry.total_seconds()),
+    )
+    return _to_public_url(url)
+
+
+def _as_object_id(value: str | None):
+    """Store as ObjectId when possible so Mongoose can hydrate the doc."""
+    if value and ObjectId.is_valid(value):
+        return ObjectId(value)
+    return value
 
 
 async def get_file_presigned_url(file_id: str) -> str | None:
-    """
-    Given a MongoDB File _id, fetch its record, then generate presigned URL from MinIO.
-    """
+    """Given a MongoDB File _id, return a presigned download URL."""
     if not file_id:
         return None
-
     try:
-        # Fetch file record from MongoDB
-        obj_id = ObjectId(file_id)  # Convert string to ObjectId
-        file_doc = await files_collection.find_one({"_id": obj_id})
+        if not ObjectId.is_valid(file_id):
+            print(f"Invalid file id: {file_id}")
+            return None
+        file_doc = await files_collection.find_one({"_id": ObjectId(file_id)})
         if not file_doc:
             print(f"File {file_id} not found in MongoDB")
             return None
-
         bucket = file_doc.get("bucket")
         object_name = file_doc.get("objectName")
-
         if not bucket or not object_name:
             print(f"File {file_id} missing bucket/objectName")
             return None
-
-        # Generate presigned URL
-        url = minio_client.presigned_get_object(
-            bucket, object_name, expires=timedelta(hours=EXPIRY_HOURS)
-        )
-        return url
-
-    except Exception as e:
+        return _presigned_get_url(bucket, object_name, timedelta(hours=PRESIGN_EXPIRY_HOURS))
+    except Exception as e:  # noqa: BLE001
         print(f"Error generating presigned URL for {file_id}: {e}")
         return None
 
 
-async def upload_pdf_to_minio_and_save_to_db(
-    pdf_path: str, job_id: str,job_type:str, courseCode: str, userId: str 
+async def upload_pdf_to_storage_and_save_to_db(
+    pdf_path: str,
+    job_id: str,
+    job_type: str,
+    course_code: str,
+    user_id: str,
+    course_id: str | None = None,
 ) -> str | None:
-    """
-    Uploads PDF to MinIO, saves record to MongoDB, returns MongoDB File _id.
+    """Upload a generated PDF to Alarik and register it in MongoDB.
+
+    Returns the MongoDB File ``_id`` (as string) or None on failure.
     """
     try:
-        # --- Upload to MinIO ---
-        object_name = None
-        file_record = None
         if job_type == "certificate":
-            object_name = f"{courseCode}/{Path(pdf_path).name}"
-            minio_client.fput_object(
-            bucket_name=MINIO_CERT_BUCKET,
-            object_name=object_name,
-            file_path=pdf_path,
-            content_type="application/pdf",
-            )
-
-            presigned_url = minio_client.presigned_get_object(
-                MINIO_CERT_BUCKET,
-                object_name,
-                expires=timedelta(days=7),  # Long expiry for certificates
-            )
-
-            # --- Save to MongoDB ---
-            file_record = {
-                "userId": userId,  # Link to user if available
-                "courseId": courseCode,  # Optional: link to user if you have user ID in job data
-                "bucket": MINIO_CERT_BUCKET,
-                "objectName": object_name,
-                "originalName": Path(pdf_path).name,
-                "mimeType": "application/pdf",
-                "size": os.path.getsize(pdf_path),
-                "presignedUrl": presigned_url,
-                "expiresAt": datetime.now(tz=timezone.utc) + timedelta(days=7),
-                "uploadedAt": datetime.now(tz=timezone.utc),
-                "metadata": {
-                    "job_id": job_id,
-                    "type": "certificate",
-                },
-            }
+            bucket = settings.certificate_bucket
+            object_name = f"{course_code}/{Path(pdf_path).name}"
         elif job_type == "report":
-            object_name = f"{userId}/{Path(pdf_path).name}"
-            minio_client.fput_object(
-            bucket_name=MINIO_REPORT_BUCKET,
-            object_name=object_name,
-            file_path=pdf_path,
-            content_type="application/pdf",
-            )
-
-            presigned_url = minio_client.presigned_get_object(
-                MINIO_REPORT_BUCKET,
-                object_name,
-                expires=timedelta(days=7),  # Long expiry for certificates
-            )
-
-            # --- Save to MongoDB ---
-            file_record = {
-                "userId": userId,  # Link to user if available
-                "bucket": MINIO_REPORT_BUCKET,
-                "objectName": object_name,
-                "originalName": Path(pdf_path).name,
-                "mimeType": "application/pdf",
-                "size": os.path.getsize(pdf_path),
-                "presignedUrl": presigned_url,
-                "expiresAt": datetime.now(tz=timezone.utc) + timedelta(days=7),
-                "uploadedAt": datetime.now(tz=timezone.utc),
-                "metadata": {
-                    "job_id": job_id,
-                    "type": "report",
-                },
-            }
+            bucket = settings.report_bucket
+            object_name = f"{user_id}/{Path(pdf_path).name}"
         else:
             raise ValueError(f"Unknown job_type: {job_type}")
-        # Upload file
-       
 
+        ensure_bucket(bucket)
+        s3_client.upload_file(
+            pdf_path,
+            bucket,
+            object_name,
+            ExtraArgs={"ContentType": "application/pdf"},
+        )
+
+        file_record = {
+            "userId": _as_object_id(user_id),
+            "courseId": _as_object_id(course_id),
+            "bucket": bucket,
+            "objectName": object_name,
+            "originalName": Path(pdf_path).name,
+            "mimeType": "application/pdf",
+            "size": Path(pdf_path).stat().st_size,
+            "presignedUrl": _presigned_get_url(bucket, object_name, FILE_URL_EXPIRY),
+            "expiresAt": datetime.now(tz=UTC) + FILE_URL_EXPIRY,
+            "uploadedAt": datetime.now(tz=UTC),
+            "metadata": {"job_id": job_id, "type": job_type},
+        }
         result = await files_collection.insert_one(file_record)
         file_id = str(result.inserted_id)
-
-        print(f"PDF uploaded to MinIO and saved to MongoDB with ID: {file_id}")
+        print(f"PDF uploaded to storage and saved to MongoDB with ID: {file_id}")
         return file_id
-
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Failed to upload/save PDF for job {job_id}: {e}")
         return None
 
-# --- NEW: Job Status Storage Logic ---
-async def upsert_job_status_in_db(job_id: str, status_data: dict):
-    """
-    Updates or inserts a job status record in MongoDB.
-    """
+
+# --- Job status persistence ---
+async def upsert_job_status_in_db(job_id: str, status_data: dict) -> None:
     try:
         await job_statuses_collection.update_one(
             {"job_id": job_id},
-            {"$set": status_data, "$setOnInsert": {"createdAt": datetime.now(tz=timezone.utc)}},
-            upsert=True
+            {
+                "$set": status_data,
+                "$setOnInsert": {"createdAt": datetime.now(tz=UTC)},
+            },
+            upsert=True,
         )
         print(f"Upserted status for job {job_id} to MongoDB: {status_data['status']}")
-    except Exception as e:
-        print(f"Error upserting job status to MongoDB for {job_id}: {e}")
+    except Exception as e:  # noqa: BLE001
+        print(f"Error upserting job status for {job_id}: {e}")
+
 
 async def get_job_status_from_db(job_id: str) -> dict | None:
-    """
-    Retrieves the latest job status from MongoDB.
-    """
     try:
         status_doc = await job_statuses_collection.find_one({"job_id": job_id})
         if status_doc:
-            # Pydantic models might not like ObjectId, so remove it
-            status_doc.pop('_id', None)
+            status_doc.pop("_id", None)
         return status_doc
-    except Exception as e:
-        print(f"Error fetching job status from MongoDB for {job_id}: {e}")
+    except Exception as e:  # noqa: BLE001
+        print(f"Error fetching job status for {job_id}: {e}")
         return None
 
-async def bulk_sync_redis_to_mongo(redis_client):
-    """
-    Scans Redis for job statuses and bulk-updates them in MongoDB.
-    """
+
+async def bulk_sync_redis_to_mongo(redis_client) -> int:
+    """Scan Redis for job statuses and bulk-upsert them into MongoDB."""
     updated_count = 0
     try:
         print("Starting periodic Redis to MongoDB sync...")
-        cursor = '0'
-        while cursor != 0:
-            cursor, keys = await redis_client.scan(cursor=cursor, match='job_status:*', count=100)
-            if not keys:
-                continue
-
-            statuses = await redis_client.mget(keys)
-            
-            operations = []
-            for i, status_json in enumerate(statuses):
-                if status_json:
-                    status_data = json.loads(status_json)
-                    job_id = keys[i].decode('utf-8').split(':')[-1]
+        cursor = "0"
+        while True:
+            cursor, keys = await redis_client.scan(
+                cursor=cursor, match="job_status:*", count=100
+            )
+            if keys:
+                statuses = await redis_client.mget(keys)
+                operations = []
+                for key, status_json in zip(keys, statuses, strict=True):
+                    if not status_json:
+                        continue
+                    job_id = key.split(":")[-1]
                     operations.append(
                         UpdateOne(
                             {"job_id": job_id},
-                            {"$set": status_data, "$setOnInsert": {"createdAt": datetime.now(tz=timezone.utc)}},
-                            upsert=True
+                            {
+                                "$set": json.loads(status_json),
+                                "$setOnInsert": {
+                                    "createdAt": datetime.now(tz=UTC)
+                                },
+                            },
+                            upsert=True,
                         )
                     )
-            
-            if operations:
-                result = await job_statuses_collection.bulk_write(operations)
-                updated_count += result.upserted_count + result.modified_count
-
+                if operations:
+                    result = await job_statuses_collection.bulk_write(operations)
+                    updated_count += result.upserted_count + result.modified_count
+            if cursor == 0:
+                break
         print(f"Sync complete. Synced {updated_count} job statuses.")
         return updated_count
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Error during Redis to MongoDB sync: {e}")
         return 0

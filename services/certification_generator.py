@@ -1,15 +1,16 @@
-import asyncio
 import os
 import re
 
 import aiofiles
 import aiohttp
-import comtypes
-from pptx import Presentation
-from pptxtopdf import convert
 import qrcode
+from pptx import Presentation
 
+from core.config import settings
 from core.storage import get_file_presigned_url
+from services.converter import convert_to_pdf  # noqa: F401  (re-exported for worker)
+
+PLACEHOLDER_IMAGE = os.path.join("assets", "n-image.png")
 
 
 def generate_qr_code(data: str, save_path: str):
@@ -26,29 +27,26 @@ def generate_qr_code(data: str, save_path: str):
         img.save(f)
 
 
-def add_qr_to_placeholder(slide, qr_data, qr_output_dir="tmp"):
-    if not os.path.exists(qr_output_dir):
-        os.makedirs(qr_output_dir)
+def add_qr_to_placeholder(slide, qr_data, qr_output_dir):
+    os.makedirs(qr_output_dir, exist_ok=True)
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
-        text = shape.text
-        image_placeholders = re.findall(r"{{qr:(.*?)}}", text)
-        if image_placeholders:
-            for img_key in image_placeholders:
-                if img_key in qr_data:
-                    data = qr_data[img_key]
-                    qr_path = os.path.join(qr_output_dir, f"qr_{hash(data)}.png")
-                    generate_qr_code(data, qr_path)
-                    left, top, width, height = (
-                        shape.left,
-                        shape.top,
-                        shape.width,
-                        shape.height,
-                    )
-                    shape._element.getparent().remove(shape._element)
-                    slide.shapes.add_picture(qr_path, left, top, width, height)
-                    break
+        image_placeholders = re.findall(r"{{qr:(.*?)}}", shape.text)
+        for img_key in image_placeholders:
+            if img_key in qr_data:
+                data = qr_data[img_key]
+                qr_path = os.path.join(qr_output_dir, f"qr_{abs(hash(data))}.png")
+                generate_qr_code(data, qr_path)
+                left, top, width, height = (
+                    shape.left,
+                    shape.top,
+                    shape.width,
+                    shape.height,
+                )
+                shape._element.getparent().remove(shape._element)
+                slide.shapes.add_picture(qr_path, left, top, width, height)
+                break
 
 
 def replace_placeholder_preserve_style(shape, data):
@@ -59,28 +57,24 @@ def replace_placeholder_preserve_style(shape, data):
             for key, value in data.items():
                 placeholder = f"{{{{{key}}}}}"
                 if placeholder in run.text:
-                    run.text = run.text.replace(placeholder, value)
+                    run.text = run.text.replace(placeholder, str(value))
 
 
 def add_image_to_placeholder(slide, image_data):
     for shape in slide.shapes:
         if not shape.has_text_frame:
             continue
-        text = shape.text
-        image_placeholders = re.findall(r"{{image:(.*?)}}", text)
-        if image_placeholders:
-            for img_key in image_placeholders:
-                if img_key in image_data:
-                    img_path = image_data[img_key]
-                    # if not os.path.exists(img_path):
-                    #     img_path = "services/n-image.png"
-                    left = shape.left
-                    top = shape.top
-                    width = shape.width
-                    height = shape.height
-                    shape._element.getparent().remove(shape._element)
-                    slide.shapes.add_picture(img_path, left, top, width, height)
-                    break
+        image_placeholders = re.findall(r"{{image:(.*?)}}", shape.text)
+        for img_key in image_placeholders:
+            if img_key in image_data:
+                img_path = image_data[img_key]
+                left = shape.left
+                top = shape.top
+                width = shape.width
+                height = shape.height
+                shape._element.getparent().remove(shape._element)
+                slide.shapes.add_picture(img_path, left, top, width, height)
+                break
 
 
 async def generate_certificate(
@@ -95,45 +89,15 @@ async def generate_certificate(
     if image_data:
         add_image_to_placeholder(slide, image_data)
     if qr_data:
-        add_qr_to_placeholder(slide, qr_data)
+        add_qr_to_placeholder(slide, qr_data, settings.tmp_dir)
     for shape in slide.shapes:
         replace_placeholder_preserve_style(shape, text_data)
     output_filename = (
-        f"certificate_{text_data.get('unique', 'filled').replace(' ', '_')}"
+        f"certificate_{text_data.get('unique', 'filled')}".replace(" ", "_")
     )
     output_pptx = os.path.join(output_dir, f"{output_filename}.pptx")
     prs.save(output_pptx)
     return output_pptx
-
-
-async def convert_to_pdf(pptx_path, output_dir):
-    loop = asyncio.get_running_loop()
-
-    def windows_convert():
-        comtypes.CoInitialize()
-        try:
-            # powerpoint = comtypes.client.CreateObject("PowerPoint.Application")
-            # Do not set Visible = False to avoid error
-            try:
-                print(f"Opening PPTX: {pptx_path}")
-                # ppt = powerpoint.Presentations.Open(pptx_path, WithWindow=0)  # Minimize window
-                base_filename = os.path.splitext(os.path.basename(pptx_path))[0]
-                print(f"Generated PDF: {output_dir}")
-                output_path = os.path.join(output_dir, f"{base_filename}.pdf")
-                convert(pptx_path, output_dir)
-                # ppt.SaveAs(output_path, 32)  # 32 = PDF
-                # ppt.Close()
-            except Exception as e:
-                raise Exception(f"PowerPoint error: {str(e)}")
-            # finally:
-            # powerpoint.Quit()
-        finally:
-            comtypes.CoUninitialize()
-        if os.path.exists(pptx_path):
-            os.remove(pptx_path)  # Cleanup PPTX
-        return output_path
-
-    return await loop.run_in_executor(None, windows_convert)
 
 
 async def get_image(image_path: str):
@@ -147,29 +111,27 @@ async def get_image(image_path: str):
                     print(f"Failed to fetch image: {response.status} - {image_url}")
                     return None
                 return await response.read()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Error fetching image from {image_url}: {e}")
             return None
 
 
 async def safe_image(image_path: str) -> str:
-    original_path = image_path
-    if image_path:
-        try:
-            image_content = await get_image(image_path)
-            if image_content:
-                # Create services directory if it doesn't exist
-                os.makedirs("tmp", exist_ok=True)
+    """Resolve a File-id reference to a local image path.
 
-                # Keep the original path structure but save in services directory
-                save_path = os.path.join("tmp", os.path.basename(image_path))
-                async with aiofiles.open(save_path, "wb") as img_file:
-                    await img_file.write(image_content)
-                return save_path
-            else:
-                return "services/n-image.png"
-        except Exception as e:
-            print(f"Error retrieving image {image_path}: {str(e)}")
-            return "services/n-image.png"
-    return original_path
-    # return image_path if os.path.exists(image_path) else "services/n-image.png"
+    Downloads the object through the shared S3 storage. Falls back to a
+    blank placeholder image when the reference is missing or unreachable.
+    """
+    if not image_path:
+        return PLACEHOLDER_IMAGE
+    try:
+        image_content = await get_image(image_path)
+        if image_content:
+            os.makedirs(settings.tmp_dir, exist_ok=True)
+            save_path = os.path.join(settings.tmp_dir, os.path.basename(image_path))
+            async with aiofiles.open(save_path, "wb") as img_file:
+                await img_file.write(image_content)
+            return save_path
+    except Exception as e:  # noqa: BLE001
+        print(f"Error retrieving image {image_path}: {e}")
+    return PLACEHOLDER_IMAGE

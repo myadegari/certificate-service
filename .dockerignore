@@ -1,0 +1,15 @@
+.git
+.venv
+venv/
+__pycache__/
+*.py[cod]
+.env
+.env docker
+*.env.local
+temp_certificates/
+temp_reports/
+tmp/
+.vscode/
+.ruff_cache/
+Dockerfile
+.dockerignore

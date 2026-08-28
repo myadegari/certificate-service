@@ -1,35 +1,42 @@
-# --- STAGE 1: Builder Stage ---
-# Use a lightweight official Python image for building dependencies
-FROM python:3.11-slim as builder
+# --- Runtime image with LibreOffice for headless PDF conversion ---
+FROM python:3.11-slim
 
-# Set the working directory inside the container
-WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/tmp
 
-# Prevent Python from writing .pyc files and buffering stdout/stderr
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
-
-# Install system dependencies needed for some Python packages (optional, but good practice)
+# LibreOffice (Impress for .pptx, Writer for .docx) + font tooling + curl for healthcheck
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc && \
+    apt-get install -y --no-install-recommends \
+        libreoffice-impress \
+        libreoffice-writer \
+        fonts-liberation \
+        fontconfig \
+        curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file and install dependencies
-COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
-RUN pip3 install uvicorn
+# Persian fonts used by the certificate/report templates
+COPY docker/fonts/ /usr/local/share/fonts/certificate-system/
+RUN fc-cache -f
 
-COPY api /app/api
-COPY core /app/core
-COPY db /app/db
-COPY models /app/models
-COPY services /app/services
-COPY app.py /app/app.py
-COPY .env /app/.env
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app.py worker.py ./
+COPY api/ ./api/
+COPY core/ ./core/
+COPY models/ ./models/
+COPY services/ ./services/
+COPY assets/ ./assets/
+COPY templates/ ./templates/
+
+RUN useradd -m appuser && \
+    mkdir -p tmp temp_certificates temp_reports && \
+    chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8000
-# Command to run the application using Uvicorn in production mode.
-# We bind to 0.0.0.0 to make it accessible outside the container and use 4 workers
-# for parallel processing (recommended: 2x number of CPU cores).
-# The syntax is 'module:variable' (app.py and app = FastAPI())
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

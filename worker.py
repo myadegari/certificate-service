@@ -1,155 +1,83 @@
 import asyncio
 import json
-import os
-from pathlib import Path
 import time
 
 import aio_pika
-from aio_pika import Message as AioPikaMessage  # Optional, for clarity
-from aio_pika.abc import AbstractIncomingMessage
-from dotenv import load_dotenv
 import redis
+from aio_pika.abc import AbstractIncomingMessage
 
-from core.storage import upload_pdf_to_minio_and_save_to_db, upsert_job_status_in_db
+from core.config import settings
+from core.messaging import publish_json
+from core.storage import (
+    upload_pdf_to_storage_and_save_to_db,
+    upsert_job_status_in_db,
+)
+from services import report_generator
 from services.certification_generator import (
     convert_to_pdf,
     generate_certificate,
     safe_image,
 )
-from services import report_generator # <-- ADD THIS IMPORT
-# import sys
-# import io
-# sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-# sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-load_dotenv()
-
-# Config
-RABBITMQ_HOST =  "localhost"
-RABBITMQ_PORT = os.getenv("RABBITMQ_PORT", "5672")
-RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
-RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
-RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "guest")
-RABBITMQ_JOB_QUEUE = os.getenv("RABBITMQ_JOB_QUEUE", "certificate_jobs")
-RABBITMQ_NOTIFICATION_QUEUE = os.getenv(
-    "RABMQ_NOTIFICATION_QUEUE", "certificate_notifications"
-)
-
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = os.getenv("REDIS_PORT", "6379")
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
-
-# Redis client (sync, since we're using it in async context — fine for simple ops)
-redis_client = redis.Redis(
-    host=REDIS_HOST,
-    port=int(REDIS_PORT),
-    password=REDIS_PASSWORD,
-    decode_responses=True,
-)
+redis_client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
 
 
-# ================================
-# ASYNC PUBLISH NOTIFICATION
-# ================================
 async def publish_notification(
-    job_id: str, status: str, file_id: str = "", error_message: str = ""
+    job_id: str,
+    status: str,
+    file_id: str = "",
+    error_message: str = "",
 ):
-    """Async: Publish job status notification to RabbitMQ and Redis with retry"""
+    """Persist job status (Redis + MongoDB) and notify the API layer."""
     message = {
         "job_id": job_id,
         "status": status,
-        "file_id": file_id,  # ✅ Send MongoDB File ID instead of path
+        "file_id": file_id,
         "timestamp": time.time(),
     }
     if error_message and status == "failed":
         message["error"] = error_message
 
-    # Store in Redis first
     try:
         redis_client.setex(f"job_status:{job_id}", 86400, json.dumps(message))
-    except Exception as e:
-        print(f"Error storing in Redis for job {job_id}: {str(e)}")
-    if status in ["completed", "failed"]:
+    except Exception as e:  # noqa: BLE001
+        print(f"Error storing status in Redis for job {job_id}: {e}")
+
+    if status in ("completed", "failed"):
         await upsert_job_status_in_db(job_id, message)
 
-    connection_string = f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST}:{RABBITMQ_PORT or 5672}/{RABBITMQ_VHOST or '%2F'}"
-
     max_retries = 5
-    retry_delay = 5
-
     for attempt in range(max_retries):
-        connection = None
         try:
-            connection = await aio_pika.connect_robust(connection_string)
-            async with connection:
-                channel = await connection.channel()
-                await channel.declare_queue(RABBITMQ_NOTIFICATION_QUEUE, durable=True)
-
-                await channel.default_exchange.publish(
-                    aio_pika.Message(
-                        body=json.dumps(message).encode("utf-8"),
-                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                        content_type="application/json",
-                        headers={"timestamp": int(time.time())},
-                    ),
-                    routing_key=RABBITMQ_NOTIFICATION_QUEUE,
-                )
-
-            print(f"✅ Successfully published notification for job {job_id}")
-            return True
-
-        except Exception as e:
-            print(f"Attempt {attempt + 1} failed for job {job_id}: {str(e)}")
+            await publish_json(settings.rabbitmq_notification_queue, message)
+            print(f"Published notification for job {job_id}")
+            return
+        except Exception as e:  # noqa: BLE001
+            print(f"Notification attempt {attempt + 1} failed for {job_id}: {e}")
             if attempt < max_retries - 1:
-                print(f"Retrying in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
+                await asyncio.sleep(5)
             else:
-                print(f"Max retries reached for job {job_id}. Giving up.")
                 raise
-        finally:
-            if connection and not connection.is_closed:
-                await connection.close()
 
 
-# ================================
-# ASYNC IMAGE PROCESSING
-# ================================
-async def process_images(data):
-    image_data = {}
-    for k, v in data["image_data"].items():
-        saved_path = await safe_image(v)
-        image_data[k] = saved_path
-    return image_data
+async def process_images(image_refs: dict) -> dict:
+    return {key: await safe_image(ref) for key, ref in image_refs.items()}
 
 
-# ================================
-# ASYNC JOB PROCESSOR
-# ================================
 async def process_job(message: AbstractIncomingMessage):
     async with message.process():
         job_id = "unknown"
+        pdf_path = None
         try:
-            body = message.body.decode("utf-8")
-            job = json.loads(body)
+            job = json.loads(message.body.decode("utf-8"))
             job_id = job["job_id"]
             data = job["data"]
             job_type = data.get("job_type", "certificate")
             print(f"Processing job {job_id} of type '{job_type}'")
             await publish_notification(job_id, "processing")
 
-            redis_client.setex(
-                f"job_status:{job_id}",
-                86400,
-                json.dumps(
-                    {"job_id": job_id, "status": "processing", "timestamp": time.time()}
-                ),
-            )
-            pdf_path = None # Initialize pdf_path variable
-             # --- JOB ROUTER ---
             if job_type == "certificate":
-                image_data = await process_images(data)
-
-                print("Generating PPTX...")
+                image_data = await process_images(data["image_data"])
                 pptx_path = await generate_certificate(
                     template_path=data["template_path"],
                     output_dir=data["output_dir"],
@@ -157,64 +85,53 @@ async def process_job(message: AbstractIncomingMessage):
                     image_data=image_data,
                     qr_data=data["qr_data"],
                 )
-                pptx_path = str(Path(pptx_path).resolve())
-                print(f"Generated PPTX: {pptx_path}")
-
-                print("Converting PPTX to PDF...")
                 pdf_path = await convert_to_pdf(pptx_path, data["output_dir"])
-                print(f"Generated PDF: {pdf_path}")
-                # ✅ --- UPLOAD TO MINIO + SAVE TO MONGODB ---
             elif job_type == "report":
-                print("Generating Report...")
-                # --- NEW LOGIC FOR REPORTS ---
                 docx_path = await report_generator.generate_enrollment_report(
                     template_path=data["template_path"],
                     output_dir=data["output_dir"],
-                    context=data["context"]
+                    context=data["context"],
                 )
-                pdf_path = await report_generator.convert_word_to_pdf(docx_path, data["output_dir"])
-            
+                pdf_path = await report_generator.convert_to_pdf(
+                    docx_path, data["output_dir"]
+                )
             else:
                 raise ValueError(f"Unknown job_type: {job_type}")
-            
-            print(f"☁️ Uploading final PDF: {pdf_path}")
-            file_id = await upload_pdf_to_minio_and_save_to_db(
-                pdf_path, job_id,job_type,data.get("courseCode",""), data["userId"]
+
+            print(f"Uploading final PDF: {pdf_path}")
+            file_id = await upload_pdf_to_storage_and_save_to_db(
+                pdf_path,
+                job_id,
+                job_type,
+                data.get("courseCode", ""),
+                data["userId"],
+                data.get("courseId"),
             )
             if not file_id:
                 raise Exception("Failed to upload PDF to storage")
-            # ✅ --- SEND NOTIFICATION WITH FILE_ID ---
             await publish_notification(job_id, "completed", file_id=file_id)
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             error_msg = str(e)
             print(f"Error processing job {job_id}: {error_msg}")
             await publish_notification(job_id, "failed", error_message=error_msg)
-            raise  # Triggers NACK + requeue
+            # Swallow the exception so the message is ACKed; re-raising would
+            # NACK it and cause an endless redelivery loop for permanent
+            # failures (bad template data, unreachable storage, ...).
 
 
-# ================================
-# MAIN CONSUMER LOOP
-# ================================
 async def main():
-    connection_string = f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST}:{RABBITMQ_PORT or 5672}/{RABBITMQ_VHOST or '%2F'}"
-
-    print(
-        f"🚀 Starting worker, connecting to {RABBITMQ_HOST}:{RABBITMQ_PORT or 5672}, vhost={RABBITMQ_VHOST or '/'}"
-    )
-
-    connection = await aio_pika.connect_robust(connection_string)
-
+    print(f"Starting worker, connecting to {settings.rabbitmq_host}:{settings.rabbitmq_port}")
+    connection = await aio_pika.connect_robust(settings.amqp_url)
     async with connection:
         channel = await connection.channel()
         await channel.set_qos(prefetch_count=1)
-
-        queue = await channel.declare_queue(RABBITMQ_JOB_QUEUE, durable=True)
-
-        print(" [*] Waiting for messages. To exit press CTRL+C")
+        queue = await channel.declare_queue(
+            settings.rabbitmq_job_queue, durable=True
+        )
+        print("Waiting for jobs. Press CTRL+C to exit.")
         await queue.consume(process_job)
-
-        await asyncio.Future()  # Run forever
+        await asyncio.Future()
 
 
 if __name__ == "__main__":
@@ -222,5 +139,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Worker stopped by user")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Fatal error in worker: {e}")

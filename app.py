@@ -1,125 +1,76 @@
 import asyncio
 from contextlib import asynccontextmanager
-import json
-import os
 from pathlib import Path
-from typing import Dict
-import requests
-import aio_pika
-from aio_pika.abc import AbstractIncomingMessage
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from redis import asyncio as aioredis
 
 from api.endpoints.certificates import router as certificates_router
 from api.endpoints.reports import router as reports_router
-from core.storage import (  # <-- Import new functions
+from core.config import settings
+from core.messaging import consume_notifications
+from core.storage import (
     bulk_sync_redis_to_mongo,
     get_job_status_from_db,
+    s3_client,
 )
 
-load_dotenv()
-
-# RabbitMQ connection settings
-RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
-RABBITMQ_PORT = os.getenv("RABBITMQ_PORT", "5672")
-RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "tenant1")
-RABBITMQ_USER = os.getenv("RABBITMQ_USER", "certuser")
-RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "securepassword123")
-RABBITMQ_JOB_QUEUE = os.getenv("RABBITMQ_JOB_QUEUE", "certificate_jobs")
-RABBITMQ_NOTIFICATION_QUEUE = os.getenv("RABBITMQ_NOTIFICATION_QUEUE", "certificate_notifications")
-
-# Redis connection settings
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = os.getenv("REDIS_PORT", "6379")
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "securepassword123")
-REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}"
-
-TEMP_DIRS = [
-    "tmp",  # where QR codes, images, etc. are stored
-]
-
 # Track WebSocket clients per job_id
-websocket_clients: Dict[str, list[WebSocket]] = {}
+websocket_clients: dict[str, list] = {}
+
+
+async def handle_notification(data: dict):
+    """Broadcast a worker status message to WebSocket clients of that job."""
+    job_id = data.get("job_id")
+    if not job_id:
+        return
+    for ws in list(websocket_clients.get(job_id, [])):
+        try:
+            await ws.send_json(data)
+        except Exception:  # noqa: BLE001
+            pass  # client disconnected; cleaned up in the WS handler
 
 
 async def cleanup_temp_files():
-    """Delete files older than 48 hours in temp directories"""
-    cutoff_time = asyncio.get_event_loop().time() - (48 * 3600)
+    """Delete files older than 48 hours in the temp directories."""
+    import time
 
-    for temp_dir in TEMP_DIRS:
+    cutoff = time.time() - 48 * 3600
+    for temp_dir in (
+        settings.tmp_dir,
+        settings.temp_certificates_dir,
+        settings.temp_reports_dir,
+    ):
         dir_path = Path(temp_dir)
-
         if not dir_path.exists():
             continue
-
-        for file_path in dir_path.iterdir():
-            if file_path.is_file():
+        for file_path in dir_path.rglob("*"):
+            if file_path.is_file() and file_path.stat().st_mtime < cutoff:
                 try:
-                    # Get file modification time
-                    if file_path.stat().st_mtime < cutoff_time:
-                        file_path.unlink()
-                        print(f"🗑️  Deleted: {file_path}")
-                except Exception as e:
-                    print(f"❌ Error deleting {file_path}: {e}")
-
-
-async def consume_notifications(redis_client):
-    """Consume status updates from RabbitMQ and push to WebSocket clients."""
-    from aio_pika import connect_robust
-    from aio_pika.abc import AbstractIncomingMessage
-
-    connection_string = f"amqp://{RABBITMQ_USER}:{RABBITMQ_PASS}@{RABBITMQ_HOST}:{RABBITMQ_PORT}/{RABBITMQ_VHOST}"
-    connection = await connect_robust(connection_string)
-    print("✅ Connected to RabbitMQ (notifications consumer)")
-
-    async with connection:
-        channel = await connection.channel()
-        queue = await channel.declare_queue(RABBITMQ_NOTIFICATION_QUEUE, durable=True)
-
-        async def process_message(message: AbstractIncomingMessage):
-            async with message.process():
-                try:
-                    body = message.body.decode()
-                    data = json.loads(body)
-                    job_id = data.get("job_id")
-                    if not job_id:
-                        return
-                    # Broadcast to all WebSocket clients for this job
-                    clients = websocket_clients.get(job_id, [])
-                    for ws in list(clients):  # copy to avoid mutation during iteration
-                        try:
-                            await ws.send_json(data)
-                        except Exception:
-                            # Client likely disconnected; will be cleaned up on disconnect
-                            pass
-                except Exception as e:
-                    print(f"❌ Error processing notification: {e}")
-
-        await queue.consume(process_message)
-        print("👂 Listening for notifications...")
-        await asyncio.Future()  # run forever
+                    file_path.unlink()
+                    print(f"Deleted stale temp file: {file_path}")
+                except OSError as e:
+                    print(f"Error deleting {file_path}: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-     # Startup
     app.state.redis = aioredis.from_url(
-        REDIS_URL, decode_responses=True, encoding="utf-8"
+        settings.redis_url, decode_responses=True, encoding="utf-8"
     )
-        # Start RabbitMQ consumer task
-    app.state.notification_task = asyncio.create_task(consume_notifications(app.state.redis))
-    print("✅ Application started - RabbitMQ notification consumer running")
+    app.state.notification_task = asyncio.create_task(
+        consume_notifications(handle_notification)
+    )
+    print("Application started - RabbitMQ notification consumer running")
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         cleanup_temp_files,
         IntervalTrigger(hours=24),
         id="cleanup_temp_files",
-        name="Clean temp files older than 48h",
         replace_existing=True,
     )
     scheduler.add_job(
@@ -127,37 +78,30 @@ async def lifespan(app: FastAPI):
         IntervalTrigger(hours=24),
         args=[app.state.redis],
         id="sync_redis_to_mongo",
-        name="Sync Redis job statuses to MongoDB",
         replace_existing=True,
     )
     scheduler.start()
-    print("✅ File cleanup and DB sync schedulers started")
 
-   
+    yield
 
-
-
-    yield  # Application runs here
-
-    # Shutdown
-    print("🛑 Shutting down - cancelling consumer...")
     scheduler.shutdown()
     app.state.notification_task.cancel()
     try:
         await app.state.notification_task
     except asyncio.CancelledError:
         pass
-
-    await app.state.redis.close()
-    print("✅ Cleanup scheduler and app shut down")
-    print("✅ Application shutdown complete")
+    await app.state.redis.aclose()
+    print("Application shutdown complete")
 
 
 app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace with your Next.js app URL
+    allow_origins=(
+        ["*"] if settings.cors_allow_origins == "*"
+        else [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -166,88 +110,60 @@ app.add_middleware(
 app.include_router(certificates_router, prefix="/certificates", tags=["certificates"])
 app.include_router(reports_router, prefix="/reports", tags=["reports"])
 
+
 @app.get("/certificates/status/{job_id}")
 async def get_status(job_id: str):
-    """
-    REST API endpoint to get the status of a specific job.
-    This is used for initial status check on page load.
-    """
-    status_data = await get_job_status(job_id)
+    """Current status of a generation job (MongoDB first, then Redis)."""
+    status_data = await get_job_status_from_db(job_id)
     if not status_data:
-        raise HTTPException(status_code=404, detail="Job status not found.")
+        try:
+            redis_status = await app.state.redis.get(f"job_status:{job_id}")
+            if redis_status:
+                import json
+
+                status_data = json.loads(redis_status)
+        except Exception:  # noqa: BLE001
+            pass
+    if not status_data:
+        # Queued but not yet processed by the worker.
+        status_data = {"job_id": job_id, "status": "pending"}
     return status_data
 
 
-
-async def get_job_status(job_id: str) -> dict:
-    """Get current job status from Redis"""
-    try:
-        # --- NEW: Check MongoDB first ---
-        db_status = await get_job_status_from_db(job_id)
-        if db_status:
-            return db_status
-        # --- END NEW ---
-        redis_status = await app.state.redis.get(f"job_status:{job_id}")
-        if redis_status:
-            return json.loads(redis_status)
-        return {"job_id": job_id, "status": "pending"}
-    except Exception as e:
-        print(f"Error getting job status from Redis: {str(e)}")
-        return {"job_id": job_id, "status": "unknown"}
-
-def check_minio_connection():
-    try:
-        # Assume Minio server is running at this URL
-        response = requests.get("http://127.0.0.1:9000/health")
-        if response.status_code == 200:
-            return True
-        return False
-    except requests.exceptions.RequestException as e:
-        print(f"Minio connection error: {e}")
-        return False
-
 @app.get("/health")
 async def health_check():
-    minio_status = check_minio_connection()
-    if not minio_status:
-        raise HTTPException(status_code=500, detail="Minio connection failed")
-    return {"status": "healthy", "minio": "connected"}
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(
+            None, lambda: s3_client.head_bucket(Bucket=settings.certificate_bucket)
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503, detail=f"Storage unreachable: {e}"
+        ) from e
+    return {"status": "healthy", "storage": "connected"}
+
 
 @app.websocket("/ws/certificates")
 async def websocket_endpoint(websocket: WebSocket):
-    """
-    WebSocket endpoint for real-time certificate status updates.
-    """
+    """Real-time certificate status updates for a given job_id."""
     await websocket.accept()
     job_id = websocket.query_params.get("job_id")
     if not job_id:
         await websocket.close(code=1008, reason="Job ID not provided")
         return
 
-    # Add the client to our list for this job
-    if job_id not in websocket_clients:
-        websocket_clients[job_id] = []
-    websocket_clients[job_id].append(websocket)
-
-    print(f"WebSocket client connected for job: {job_id}")
-
+    websocket_clients.setdefault(job_id, []).append(websocket)
     try:
-        # Listen for messages from the client.
-        # This loop will keep the connection open.
         while True:
-            # We don't need to process incoming messages from the client for this use case.
-            # We just need to keep the connection alive.
-            # If a client sends a message, we can just acknowledge it.
-            await websocket.receive_text()
+            await websocket.receive_text()  # keep the connection alive
     except WebSocketDisconnect:
-        print(f"Client disconnected for job_id: {job_id}")
-    except Exception as e:
-        print(f"WebSocket error for job_id {job_id}: {str(e)}")
+        pass
+    except Exception as e:  # noqa: BLE001
+        print(f"WebSocket error for job {job_id}: {e}")
     finally:
-        # Cleanup when the connection closes
-        if job_id in websocket_clients:
-            if websocket in websocket_clients[job_id]:
-                websocket_clients[job_id].remove(websocket)
-            if not websocket_clients[job_id]:
-                del websocket_clients[job_id]
-        print(f"🔌 WebSocket disconnected for job: {job_id}")
+        clients = websocket_clients.get(job_id, [])
+        if websocket in clients:
+            clients.remove(websocket)
+        if not clients:
+            websocket_clients.pop(job_id, None)
