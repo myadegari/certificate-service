@@ -17,11 +17,15 @@ from services.certification_generator import (
     safe_image,
 )
 from services import report_generator # <-- ADD THIS IMPORT
+# import sys
+# import io
+# sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+# sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 load_dotenv()
 
 # Config
-RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
+RABBITMQ_HOST =  "localhost"
 RABBITMQ_PORT = os.getenv("RABBITMQ_PORT", "5672")
 RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "/")
 RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
@@ -97,10 +101,10 @@ async def publish_notification(
         except Exception as e:
             print(f"Attempt {attempt + 1} failed for job {job_id}: {str(e)}")
             if attempt < max_retries - 1:
-                print(f"⏳ Retrying in {retry_delay} seconds...")
+                print(f"Retrying in {retry_delay} seconds...")
                 await asyncio.sleep(retry_delay)
             else:
-                print(f"❌ Max retries reached for job {job_id}. Giving up.")
+                print(f"Max retries reached for job {job_id}. Giving up.")
                 raise
         finally:
             if connection and not connection.is_closed:
@@ -130,7 +134,7 @@ async def process_job(message: AbstractIncomingMessage):
             job_id = job["job_id"]
             data = job["data"]
             job_type = data.get("job_type", "certificate")
-            print(f"🔧 Processing job {job_id} of type '{job_type}'")
+            print(f"Processing job {job_id} of type '{job_type}'")
             await publish_notification(job_id, "processing")
 
             redis_client.setex(
@@ -145,7 +149,7 @@ async def process_job(message: AbstractIncomingMessage):
             if job_type == "certificate":
                 image_data = await process_images(data)
 
-                print("🎨 Generating PPTX...")
+                print("Generating PPTX...")
                 pptx_path = await generate_certificate(
                     template_path=data["template_path"],
                     output_dir=data["output_dir"],
@@ -154,14 +158,14 @@ async def process_job(message: AbstractIncomingMessage):
                     qr_data=data["qr_data"],
                 )
                 pptx_path = str(Path(pptx_path).resolve())
-                print(f"✅ Generated PPTX: {pptx_path}")
+                print(f"Generated PPTX: {pptx_path}")
 
-                print("📄 Converting PPTX to PDF...")
+                print("Converting PPTX to PDF...")
                 pdf_path = await convert_to_pdf(pptx_path, data["output_dir"])
-                print(f"✅ Generated PDF: {pdf_path}")
+                print(f"Generated PDF: {pdf_path}")
                 # ✅ --- UPLOAD TO MINIO + SAVE TO MONGODB ---
             elif job_type == "report":
-                print("📄 Generating Report...")
+                print("Generating Report...")
                 # --- NEW LOGIC FOR REPORTS ---
                 docx_path = await report_generator.generate_enrollment_report(
                     template_path=data["template_path"],
@@ -184,7 +188,7 @@ async def process_job(message: AbstractIncomingMessage):
 
         except Exception as e:
             error_msg = str(e)
-            print(f"❌ Error processing job {job_id}: {error_msg}")
+            print(f"Error processing job {job_id}: {error_msg}")
             await publish_notification(job_id, "failed", error_message=error_msg)
             raise  # Triggers NACK + requeue
 
@@ -217,6 +221,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("🛑 Worker stopped by user")
+        print("Worker stopped by user")
     except Exception as e:
-        print(f"💥 Fatal error in worker: {e}")
+        print(f"Fatal error in worker: {e}")

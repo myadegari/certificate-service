@@ -12,8 +12,8 @@ from pydantic import BaseModel, Field
 from models.report import ReportRequest
 
 # --- Load RabbitMQ config from environment variables ---
-RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
-RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", 9105))
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
+RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", 5672))
 RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "tenant1")
 RABBITMQ_USER = os.getenv("RABBITMQ_USER", "certuser")
 RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "securepassword123")

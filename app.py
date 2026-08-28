@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 from typing import Dict
-
+import requests
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -24,18 +24,18 @@ from core.storage import (  # <-- Import new functions
 load_dotenv()
 
 # RabbitMQ connection settings
-RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "")
-RABBITMQ_PORT = os.getenv("RABBITMQ_PORT", "")
-RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "")
-RABBITMQ_USER = os.getenv("RABBITMQ_USER", "")
-RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "")
-RABBITMQ_JOB_QUEUE = os.getenv("RABBITMQ_JOB_QUEUE", "")
-RABBITMQ_NOTIFICATION_QUEUE = os.getenv("RABBITMQ_NOTIFICATION_QUEUE", "")
+RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
+RABBITMQ_PORT = os.getenv("RABBITMQ_PORT", "5672")
+RABBITMQ_VHOST = os.getenv("RABBITMQ_VHOST", "tenant1")
+RABBITMQ_USER = os.getenv("RABBITMQ_USER", "certuser")
+RABBITMQ_PASS = os.getenv("RABBITMQ_PASS", "securepassword123")
+RABBITMQ_JOB_QUEUE = os.getenv("RABBITMQ_JOB_QUEUE", "certificate_jobs")
+RABBITMQ_NOTIFICATION_QUEUE = os.getenv("RABBITMQ_NOTIFICATION_QUEUE", "certificate_notifications")
 
 # Redis connection settings
-REDIS_HOST = os.getenv("REDIS_HOST", "")
-REDIS_PORT = os.getenv("REDIS_PORT", "")
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = os.getenv("REDIS_PORT", "6379")
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "securepassword123")
 REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}"
 
 TEMP_DIRS = [
@@ -157,7 +157,7 @@ app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "*"],  # Replace with your Next.js app URL
+    allow_origins=["*"],  # Replace with your Next.js app URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -172,7 +172,7 @@ async def get_status(job_id: str):
     REST API endpoint to get the status of a specific job.
     This is used for initial status check on page load.
     """
-    status_data = await get_job_status_from_db(job_id)
+    status_data = await get_job_status(job_id)
     if not status_data:
         raise HTTPException(status_code=404, detail="Job status not found.")
     return status_data
@@ -195,6 +195,23 @@ async def get_job_status(job_id: str) -> dict:
         print(f"Error getting job status from Redis: {str(e)}")
         return {"job_id": job_id, "status": "unknown"}
 
+def check_minio_connection():
+    try:
+        # Assume Minio server is running at this URL
+        response = requests.get("http://127.0.0.1:9000/health")
+        if response.status_code == 200:
+            return True
+        return False
+    except requests.exceptions.RequestException as e:
+        print(f"Minio connection error: {e}")
+        return False
+
+@app.get("/health")
+async def health_check():
+    minio_status = check_minio_connection()
+    if not minio_status:
+        raise HTTPException(status_code=500, detail="Minio connection failed")
+    return {"status": "healthy", "minio": "connected"}
 
 @app.websocket("/ws/certificates")
 async def websocket_endpoint(websocket: WebSocket):

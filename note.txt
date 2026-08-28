@@ -1,2 +1,0 @@
-docker compose --env-file .env.local up -d  
-poetry add --group dev ruff

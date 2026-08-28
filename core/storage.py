@@ -24,7 +24,7 @@ users_collection = db["users"]
 job_statuses_collection = db["job_statuses"] # <-- New collection
 
 # --- MinIO Setup ---
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT")
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT","127.0.0.1")
 MINIO_PORT = int(os.getenv("MINIO_PORT", 9000))
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
@@ -167,11 +167,11 @@ async def upload_pdf_to_minio_and_save_to_db(
         result = await files_collection.insert_one(file_record)
         file_id = str(result.inserted_id)
 
-        print(f"✅ PDF uploaded to MinIO and saved to MongoDB with ID: {file_id}")
+        print(f"PDF uploaded to MinIO and saved to MongoDB with ID: {file_id}")
         return file_id
 
     except Exception as e:
-        print(f"❌ Failed to upload/save PDF for job {job_id}: {e}")
+        print(f"Failed to upload/save PDF for job {job_id}: {e}")
         return None
 
 # --- NEW: Job Status Storage Logic ---
@@ -209,7 +209,7 @@ async def bulk_sync_redis_to_mongo(redis_client):
     """
     updated_count = 0
     try:
-        print("🚀 Starting periodic Redis to MongoDB sync...")
+        print("Starting periodic Redis to MongoDB sync...")
         cursor = '0'
         while cursor != 0:
             cursor, keys = await redis_client.scan(cursor=cursor, match='job_status:*', count=100)
@@ -235,8 +235,8 @@ async def bulk_sync_redis_to_mongo(redis_client):
                 result = await job_statuses_collection.bulk_write(operations)
                 updated_count += result.upserted_count + result.modified_count
 
-        print(f"✅ Sync complete. Synced {updated_count} job statuses.")
+        print(f"Sync complete. Synced {updated_count} job statuses.")
         return updated_count
     except Exception as e:
-        print(f"❌ Error during Redis to MongoDB sync: {e}")
+        print(f"Error during Redis to MongoDB sync: {e}")
         return 0

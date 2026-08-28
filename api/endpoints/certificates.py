@@ -11,8 +11,8 @@ from models.certificate import CertificateRequest, Signatory
 
 router = APIRouter()
 
-RABBITMQ_HOST = "localhost"
-RABBITMQ_PORT = 9105  # Updated to match docker-compose.yml
+RABBITMQ_HOST = "rabbitmq"
+RABBITMQ_PORT = 5672  # Updated to match docker-compose.yml
 RABBITMQ_VHOST = "tenant1"
 RABBITMQ_USER = "certuser"
 RABBITMQ_PASS = "securepassword123"
@@ -47,10 +47,10 @@ async def publish_to_rabbitmq(data: dict, job_id: str):
                 message, routing_key=RABBITMQ_JOB_QUEUE
             )
 
-            print(f"✅ Published job {job_id} to RabbitMQ")
+            print(f"Published job {job_id} to RabbitMQ")
 
     except Exception as e:
-        print(f"❌ Error publishing to RabbitMQ: {str(e)}")
+        print(f"Error publishing to RabbitMQ: {str(e)}")
         raise  # Let FastAPI handle it and return 500
 
 
