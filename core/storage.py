@@ -160,8 +160,20 @@ async def upload_pdf_to_storage_and_save_to_db(
             "uploadedAt": datetime.now(tz=UTC),
             "metadata": {"job_id": job_id, "type": job_type},
         }
-        result = await files_collection.insert_one(file_record)
-        file_id = str(result.inserted_id)
+        # Upsert keyed on the job id so a redelivered/retried job replaces its
+        # record instead of creating a duplicate certificate File row.
+        result = await files_collection.update_one(
+            {"metadata.job_id": job_id, "bucket": bucket},
+            {"$set": file_record},
+            upsert=True,
+        )
+        if result.upserted_id:
+            file_id = str(result.upserted_id)
+        else:
+            existing = await files_collection.find_one(
+                {"metadata.job_id": job_id, "bucket": bucket}, {"_id": 1}
+            )
+            file_id = str(existing["_id"]) if existing else None
         print(f"PDF uploaded to storage and saved to MongoDB with ID: {file_id}")
         return file_id
     except Exception as e:  # noqa: BLE001
