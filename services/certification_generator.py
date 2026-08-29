@@ -2,12 +2,11 @@ import os
 import re
 
 import aiofiles
-import aiohttp
 import qrcode
 from pptx import Presentation
 
 from core.config import settings
-from core.storage import get_file_presigned_url
+from core.storage import get_file_bytes
 from services.converter import convert_to_pdf  # noqa: F401  (re-exported for worker)
 
 PLACEHOLDER_IMAGE = os.path.join("assets", "n-image.png")
@@ -100,32 +99,17 @@ async def generate_certificate(
     return output_pptx
 
 
-async def get_image(image_path: str):
-    image_url = await get_file_presigned_url(image_path)
-    if not image_url:
-        return None
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(image_url) as response:
-                if response.status != 200:
-                    print(f"Failed to fetch image: {response.status} - {image_url}")
-                    return None
-                return await response.read()
-        except Exception as e:  # noqa: BLE001
-            print(f"Error fetching image from {image_url}: {e}")
-            return None
-
-
 async def safe_image(image_path: str) -> str:
     """Resolve a File-id reference to a local image path.
 
-    Downloads the object through the shared S3 storage. Falls back to a
-    blank placeholder image when the reference is missing or unreachable.
+    Downloads the object straight from shared storage (server-side). Falls
+    back to a blank placeholder image when the reference is missing or
+    unreachable.
     """
     if not image_path:
         return PLACEHOLDER_IMAGE
     try:
-        image_content = await get_image(image_path)
+        image_content = await get_file_bytes(image_path)
         if image_content:
             os.makedirs(settings.tmp_dir, exist_ok=True)
             save_path = os.path.join(settings.tmp_dir, os.path.basename(image_path))

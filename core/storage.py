@@ -1,8 +1,7 @@
 """Object storage (Alarik / S3) + MongoDB persistence.
 
 Both the Next.js app and this service share:
-  - the same S3-compatible endpoint and buckets
-    (``certificate`` and ``report``),
+  - the same S3-compatible endpoint and buckets (``certificate``),
   - the same MongoDB ``certification`` database
     (``files`` and ``job_statuses`` collections).
 
@@ -11,6 +10,7 @@ app's ``models/File.js`` schema (bucket/objectName are read by the
 public /api/verify/[id] route).
 """
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -83,27 +83,41 @@ def _as_object_id(value: str | None):
     return value
 
 
-async def get_file_presigned_url(file_id: str) -> str | None:
-    """Given a MongoDB File _id, return a presigned download URL."""
-    if not file_id:
+def _get_object_bytes(bucket: str, object_name: str) -> bytes | None:
+    """Fetch an object's raw bytes directly over the internal S3 endpoint."""
+    try:
+        response = s3_client.get_object(Bucket=bucket, Key=object_name)
+        return response["Body"].read()
+    except ClientError as e:
+        print(f"Error fetching object {bucket}/{object_name}: {e}")
+        return None
+
+
+async def get_file_bytes(file_id: str) -> bytes | None:
+    """Resolve a MongoDB File _id to its raw bytes for server-side use.
+
+    Reads the object straight from storage via the internal endpoint (no
+    presigned URL / public-host rewrite), so the worker can always reach it.
+    boto3 is synchronous, so the call runs in a thread executor.
+    """
+    if not file_id or not ObjectId.is_valid(file_id):
+        print(f"Invalid file id: {file_id}")
         return None
     try:
-        if not ObjectId.is_valid(file_id):
-            print(f"Invalid file id: {file_id}")
-            return None
         file_doc = await files_collection.find_one({"_id": ObjectId(file_id)})
-        if not file_doc:
-            print(f"File {file_id} not found in MongoDB")
-            return None
-        bucket = file_doc.get("bucket")
-        object_name = file_doc.get("objectName")
-        if not bucket or not object_name:
-            print(f"File {file_id} missing bucket/objectName")
-            return None
-        return _presigned_get_url(bucket, object_name, timedelta(hours=PRESIGN_EXPIRY_HOURS))
     except Exception as e:  # noqa: BLE001
-        print(f"Error generating presigned URL for {file_id}: {e}")
+        print(f"Error looking up file {file_id}: {e}")
         return None
+    if not file_doc:
+        print(f"File {file_id} not found in MongoDB")
+        return None
+    bucket = file_doc.get("bucket")
+    object_name = file_doc.get("objectName")
+    if not bucket or not object_name:
+        print(f"File {file_id} missing bucket/objectName")
+        return None
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _get_object_bytes, bucket, object_name)
 
 
 async def upload_pdf_to_storage_and_save_to_db(
@@ -122,9 +136,6 @@ async def upload_pdf_to_storage_and_save_to_db(
         if job_type == "certificate":
             bucket = settings.certificate_bucket
             object_name = f"{course_code}/{Path(pdf_path).name}"
-        elif job_type == "report":
-            bucket = settings.report_bucket
-            object_name = f"{user_id}/{Path(pdf_path).name}"
         else:
             raise ValueError(f"Unknown job_type: {job_type}")
 

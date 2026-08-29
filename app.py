@@ -4,34 +4,17 @@ from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from redis import asyncio as aioredis
 
 from api.endpoints.certificates import router as certificates_router
-from api.endpoints.reports import router as reports_router
 from core.config import settings
-from core.messaging import consume_notifications
 from core.storage import (
     bulk_sync_redis_to_mongo,
     get_job_status_from_db,
     s3_client,
 )
-
-# Track WebSocket clients per job_id
-websocket_clients: dict[str, list] = {}
-
-
-async def handle_notification(data: dict):
-    """Broadcast a worker status message to WebSocket clients of that job."""
-    job_id = data.get("job_id")
-    if not job_id:
-        return
-    for ws in list(websocket_clients.get(job_id, [])):
-        try:
-            await ws.send_json(data)
-        except Exception:  # noqa: BLE001
-            pass  # client disconnected; cleaned up in the WS handler
 
 
 async def cleanup_temp_files():
@@ -42,7 +25,6 @@ async def cleanup_temp_files():
     for temp_dir in (
         settings.tmp_dir,
         settings.temp_certificates_dir,
-        settings.temp_reports_dir,
     ):
         dir_path = Path(temp_dir)
         if not dir_path.exists():
@@ -61,10 +43,7 @@ async def lifespan(app: FastAPI):
     app.state.redis = aioredis.from_url(
         settings.redis_url, decode_responses=True, encoding="utf-8"
     )
-    app.state.notification_task = asyncio.create_task(
-        consume_notifications(handle_notification)
-    )
-    print("Application started - RabbitMQ notification consumer running")
+    print("Application started")
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
@@ -85,11 +64,6 @@ async def lifespan(app: FastAPI):
     yield
 
     scheduler.shutdown()
-    app.state.notification_task.cancel()
-    try:
-        await app.state.notification_task
-    except asyncio.CancelledError:
-        pass
     await app.state.redis.aclose()
     print("Application shutdown complete")
 
@@ -108,7 +82,6 @@ app.add_middleware(
 )
 
 app.include_router(certificates_router, prefix="/certificates", tags=["certificates"])
-app.include_router(reports_router, prefix="/reports", tags=["reports"])
 
 
 @app.get("/certificates/status/{job_id}")
@@ -142,28 +115,3 @@ async def health_check():
             status_code=503, detail=f"Storage unreachable: {e}"
         ) from e
     return {"status": "healthy", "storage": "connected"}
-
-
-@app.websocket("/ws/certificates")
-async def websocket_endpoint(websocket: WebSocket):
-    """Real-time certificate status updates for a given job_id."""
-    await websocket.accept()
-    job_id = websocket.query_params.get("job_id")
-    if not job_id:
-        await websocket.close(code=1008, reason="Job ID not provided")
-        return
-
-    websocket_clients.setdefault(job_id, []).append(websocket)
-    try:
-        while True:
-            await websocket.receive_text()  # keep the connection alive
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:  # noqa: BLE001
-        print(f"WebSocket error for job {job_id}: {e}")
-    finally:
-        clients = websocket_clients.get(job_id, [])
-        if websocket in clients:
-            clients.remove(websocket)
-        if not clients:
-            websocket_clients.pop(job_id, None)

@@ -3,19 +3,26 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    HOME=/tmp
+    HOME=/tmp \
+    LANG=fa_IR.UTF-8 \
+    LC_ALL=fa_IR.UTF-8
 
-# LibreOffice (Impress for .pptx, Writer for .docx) + font tooling + curl for healthcheck
+# LibreOffice (Impress for .pptx) + Persian locale + font tooling + curl for healthcheck
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libreoffice-impress \
-        libreoffice-writer \
+        libreoffice-l10n-fa \
+        locales \
         fonts-liberation \
         fontconfig \
         curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Persian fonts used by the certificate/report templates
+# Generate the Persian locale (append the entry, then generate; the
+# `locale-gen <name>` argument form is unreliable on this base image).
+RUN echo "fa_IR.UTF-8 UTF-8" >> /etc/locale.gen && locale-gen
+
+# Persian fonts used by the certificate template
 COPY docker/fonts/ /usr/local/share/fonts/certificate-system/
 RUN fc-cache -f
 
@@ -33,7 +40,7 @@ COPY assets/ ./assets/
 COPY templates/ ./templates/
 
 RUN useradd -m appuser && \
-    mkdir -p tmp temp_certificates temp_reports && \
+    mkdir -p tmp temp_certificates && \
     chown -R appuser:appuser /app
 USER appuser
 

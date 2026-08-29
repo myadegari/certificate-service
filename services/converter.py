@@ -11,6 +11,20 @@ from pathlib import Path
 
 from core.config import settings
 
+# Persian (fa-IR) LCID = 0x429 (1065). Forces LibreOffice's factory/UI/system
+# locale to Persian on first run so digits, dates, and complex-script (CTL)
+# defaults follow the Persian locale.
+PERSIAN_LOCALE_XCU = """<?xml version="1.0" encoding="UTF-8"?>
+<oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+ <item oor:path="/org.openoffice.Setup/L10N"><prop oor:name="ooSetupFactoryLocale" oor:op="fuse"><value>0x429</value></prop></item>
+ <item oor:path="/org.openoffice.Setup/L10N"><prop oor:name="ooSetupUILocale" oor:op="fuse"><value>0x429</value></prop></item>
+ <item oor:path="/org.openoffice.Setup/L10N"><prop oor:name="ooSetupInstalledLocale" oor:op="fuse"><value>0x429</value></prop></item>
+ <item oor:path="/org.openoffice.Setup/L10N"><prop oor:name="ooSetupFactorySystemLocale" oor:op="fuse"><value>0x429</value></prop></item>
+ <item oor:path="/org.openoffice.Setup/L10N"><prop oor:name="ooSetupSystemLocale" oor:op="fuse"><value>fa-IR</value></prop></item>
+ <item oor:path="/org.openoffice.Setup/L10N"><prop oor:name="ooSetupFactoryDefaultFilterLocale" oor:op="fuse"><value>fa-IR</value></prop></item>
+</oor:items>
+"""
+
 _WINDOWS_CANDIDATES = [
     Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
     / "LibreOffice/program/soffice.exe",
@@ -33,6 +47,19 @@ def soffice_binary() -> str:
     )
 
 
+def _seed_persian_profile(profile: Path) -> None:
+    """Pre-seed a fresh LibreOffice profile with the Persian locale.
+
+    Only writes when the profile has not been initialized yet, so we never
+    clobber settings LibreOffice accumulates on later runs.
+    """
+    xcu = profile / "user" / "registrymodifications.xcu"
+    if xcu.exists():
+        return
+    xcu.parent.mkdir(parents=True, exist_ok=True)
+    xcu.write_text(PERSIAN_LOCALE_XCU, encoding="utf-8")
+
+
 async def convert_to_pdf(source_path: str, output_dir: str) -> str:
     """Convert .pptx/.docx to PDF. Deletes the source file on success."""
     src = Path(source_path).resolve()
@@ -43,6 +70,9 @@ async def convert_to_pdf(source_path: str, output_dir: str) -> str:
     # Isolated profile dir so concurrent invocations never clash.
     profile = Path(settings.tmp_dir) / "lo_profile"
     profile.mkdir(parents=True, exist_ok=True)
+    _seed_persian_profile(profile)
+
+    env = {**os.environ, "LANG": "fa_IR.UTF-8", "LC_ALL": "fa_IR.UTF-8"}
 
     proc = await asyncio.create_subprocess_exec(
         soffice_binary(),
@@ -57,6 +87,7 @@ async def convert_to_pdf(source_path: str, output_dir: str) -> str:
         str(src),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     stdout, stderr = await proc.communicate()
 

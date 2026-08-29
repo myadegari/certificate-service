@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     rabbitmq_user: str = "guest"
     rabbitmq_pass: str = "guest"
     rabbitmq_job_queue: str = "certificate_jobs"
-    rabbitmq_notification_queue: str = "certificate_notifications"
 
     # --- Redis ---
     redis_host: str = "redis"
@@ -44,7 +43,12 @@ class Settings(BaseSettings):
     # (must match STORAGE_PUBLIC_URL in the Next.js app).
     storage_public_url: str = ""
     certificate_bucket: str = "certificate"
-    report_bucket: str = "report"
+
+    # --- Status webhook back to the Next.js app ---
+    # The worker POSTs certificate-job status here (HMAC-signed) so the app can
+    # persist it and push to clients over SSE.
+    next_webhook_url: str = ""
+    webhook_secret: str = ""
 
     # --- PDF conversion ---
     # Path to the LibreOffice binary (soffice). Auto-detected when empty.
@@ -56,7 +60,6 @@ class Settings(BaseSettings):
     # --- Working directories ---
     tmp_dir: str = "tmp"
     temp_certificates_dir: str = "temp_certificates"
-    temp_reports_dir: str = "temp_reports"
 
     @property
     def amqp_url(self) -> str:
