@@ -7,9 +7,14 @@ Replaces the previous Windows-only MS Office COM automation
 import asyncio
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from core.config import settings
+
+# Hard ceiling for one LibreOffice invocation; a hung soffice must never wedge
+# the worker (the message would stay unacked and hang again on redelivery).
+CONVERT_TIMEOUT_SECONDS = 120
 
 # Persian (fa-IR) LCID = 0x429 (1065). Forces LibreOffice's factory/UI/system
 # locale to Persian on first run so digits, dates, and complex-script (CTL)
@@ -67,29 +72,43 @@ async def convert_to_pdf(source_path: str, output_dir: str) -> str:
     outdir.mkdir(parents=True, exist_ok=True)
     pdf_path = outdir / f"{src.stem}.pdf"
 
-    # Isolated profile dir so concurrent invocations never clash.
-    profile = Path(settings.tmp_dir) / "lo_profile"
-    profile.mkdir(parents=True, exist_ok=True)
-    _seed_persian_profile(profile)
+    # A fresh profile per conversion: concurrent soffice instances would
+    # otherwise fight over the shared UserInstallation lock (lock failures /
+    # profile corruption). Each profile is seeded with the Persian locale and
+    # removed afterwards.
+    profile = Path(tempfile.mkdtemp(prefix="lo_profile_"))
+    try:
+        _seed_persian_profile(profile)
 
-    env = {**os.environ, "LANG": "fa_IR.UTF-8", "LC_ALL": "fa_IR.UTF-8"}
+        env = {**os.environ, "LANG": "fa_IR.UTF-8", "LC_ALL": "fa_IR.UTF-8"}
 
-    proc = await asyncio.create_subprocess_exec(
-        soffice_binary(),
-        "--headless",
-        "--norestore",
-        "--nolockcheck",
-        f"-env:UserInstallation={profile.resolve().as_uri()}",
-        "--convert-to",
-        "pdf",
-        "--outdir",
-        str(outdir),
-        str(src),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    stdout, stderr = await proc.communicate()
+        proc = await asyncio.create_subprocess_exec(
+            soffice_binary(),
+            "--headless",
+            "--norestore",
+            "--nolockcheck",
+            f"-env:UserInstallation={profile.resolve().as_uri()}",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(outdir),
+            str(src),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=CONVERT_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError(
+                f"LibreOffice conversion timed out after {CONVERT_TIMEOUT_SECONDS}s"
+            )
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
 
     if proc.returncode != 0 or not pdf_path.exists():
         raise RuntimeError(

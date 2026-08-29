@@ -1,6 +1,5 @@
 import asyncio
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -17,27 +16,6 @@ from core.storage import (
 )
 
 
-async def cleanup_temp_files():
-    """Delete files older than 48 hours in the temp directories."""
-    import time
-
-    cutoff = time.time() - 48 * 3600
-    for temp_dir in (
-        settings.tmp_dir,
-        settings.temp_certificates_dir,
-    ):
-        dir_path = Path(temp_dir)
-        if not dir_path.exists():
-            continue
-        for file_path in dir_path.rglob("*"):
-            if file_path.is_file() and file_path.stat().st_mtime < cutoff:
-                try:
-                    file_path.unlink()
-                    print(f"Deleted stale temp file: {file_path}")
-                except OSError as e:
-                    print(f"Error deleting {file_path}: {e}")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.redis = aioredis.from_url(
@@ -45,13 +23,9 @@ async def lifespan(app: FastAPI):
     )
     print("Application started")
 
+    # NOTE: temp-file cleanup lives in the worker (worker.py) — that is the
+    # container that actually writes tmp/ and temp_certificates/.
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        cleanup_temp_files,
-        IntervalTrigger(hours=24),
-        id="cleanup_temp_files",
-        replace_existing=True,
-    )
     scheduler.add_job(
         bulk_sync_redis_to_mongo,
         IntervalTrigger(hours=24),

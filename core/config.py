@@ -6,6 +6,7 @@ Every module must import `settings` from here instead of calling
 """
 
 from functools import lru_cache
+from urllib.parse import quote
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -69,15 +70,16 @@ class Settings(BaseSettings):
 
     @property
     def amqp_url(self) -> str:
-        vhost = self.rabbitmq_vhost or "/"
+        # Credentials/vhost are percent-encoded: a password containing
+        # @ : / # or the default "/" vhost would otherwise corrupt the URL.
         return (
-            f"amqp://{self.rabbitmq_user}:{self.rabbitmq_pass}"
-            f"@{self.rabbitmq_host}:{self.rabbitmq_port}/{vhost}"
+            f"amqp://{quote(self.rabbitmq_user, safe='')}:{quote(self.rabbitmq_pass, safe='')}"
+            f"@{self.rabbitmq_host}:{self.rabbitmq_port}/{quote(self.rabbitmq_vhost or '/', safe='')}"
         )
 
     @property
     def redis_url(self) -> str:
-        auth = f":{self.redis_password}@" if self.redis_password else ""
+        auth = f":{quote(self.redis_password, safe='')}@" if self.redis_password else ""
         return f"redis://{auth}{self.redis_host}:{self.redis_port}"
 
 

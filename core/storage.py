@@ -11,6 +11,7 @@ public /api/verify/[id] route).
 """
 
 import asyncio
+import functools
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -140,11 +141,18 @@ async def upload_pdf_to_storage_and_save_to_db(
             raise ValueError(f"Unknown job_type: {job_type}")
 
         ensure_bucket(bucket)
-        s3_client.upload_file(
-            pdf_path,
-            bucket,
-            object_name,
-            ExtraArgs={"ContentType": "application/pdf"},
+        # boto3 is synchronous; keep the blocking upload off the event loop so
+        # a slow Alarik cannot stall heartbeats, webhook timers, or acks.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            functools.partial(
+                s3_client.upload_file,
+                pdf_path,
+                bucket,
+                object_name,
+                ExtraArgs={"ContentType": "application/pdf"},
+            ),
         )
 
         file_record = {
