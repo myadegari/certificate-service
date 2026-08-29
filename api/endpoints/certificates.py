@@ -1,7 +1,8 @@
+import hmac
 import os
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from core.config import settings
@@ -9,6 +10,18 @@ from core.messaging import publish_job
 from models.certificate import CertificateRequest, Signatory
 
 router = APIRouter()
+
+
+def require_internal_token(x_internal_token: str | None) -> None:
+    """Fail-closed shared-secret check for the generation endpoint."""
+    expected = settings.internal_api_token
+    if not expected:
+        # Unconfigured (local dev only) — do not enforce.
+        return
+    if not x_internal_token or not hmac.compare_digest(
+        x_internal_token, expected
+    ):
+        raise HTTPException(status_code=401, detail="Invalid internal token")
 
 
 def prepare_signatory_data(signatory) -> Signatory:
@@ -20,7 +33,12 @@ def prepare_signatory_data(signatory) -> Signatory:
 
 
 @router.post("/generate/")
-async def generate_certificate_endpoint(request: CertificateRequest):
+async def generate_certificate_endpoint(
+    request: CertificateRequest,
+    x_internal_token: str | None = Header(default=None),
+):
+    require_internal_token(x_internal_token)
+
     template_name = (
         "certificate_template2.pptx"
         if request.category == "2"
@@ -44,7 +62,9 @@ async def generate_certificate_endpoint(request: CertificateRequest):
         "date": request.course.date,
         "time": request.course.time,
         "issue": request.issuedAt,
-        "unique": request.certificationId,
+        # The generated/validated id (never the raw optional request field,
+        # which would otherwise render "None" and collide filenames).
+        "unique": cert_id,
         "number": request.certificateNumber,
         "signatory": signatory_data.name,
         "position": signatory_data.position,

@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # --- HTTP ---
     cors_allow_origins: str = "*"
 
+    # --- Internal API ---
+    # Shared secret required as the X-Internal-Token header on
+    # /certificates/generate. Must match MICROSERVICE_TOKEN in the app.
+    # When empty the endpoint is left open (local dev only).
+    internal_api_token: str = ""
+
     # --- Working directories ---
     tmp_dir: str = "tmp"
     temp_certificates_dir: str = "temp_certificates"

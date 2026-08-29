@@ -70,13 +70,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+_cors_origins = (
+    ["*"]
+    if settings.cors_allow_origins == "*"
+    else [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
+)
+# A wildcard origin can never be combined with credentials: Starlette would
+# echo any requesting origin with Access-Control-Allow-Credentials, letting
+# arbitrary websites make credentialed calls.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=(
-        ["*"] if settings.cors_allow_origins == "*"
-        else [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
-    ),
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=(_cors_origins != ["*"]),
     allow_methods=["*"],
     allow_headers=["*"],
 )
