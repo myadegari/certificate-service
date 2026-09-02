@@ -3,6 +3,7 @@ import re
 
 import aiofiles
 import qrcode
+from PIL import Image
 from pptx import Presentation
 
 from core.config import settings
@@ -59,6 +60,31 @@ def replace_placeholder_preserve_style(shape, data):
                     run.text = run.text.replace(placeholder, str(value))
 
 
+def _fit_box(img_path, left, top, width, height):
+    """Scale an image to fit inside the placeholder box preserving its native
+    aspect ratio, centered. Falls back to the raw box (old forced behavior) if
+    the image can't be read or has a zero size."""
+    try:
+        with Image.open(img_path) as im:
+            nw, nh = im.size
+    except Exception:  # noqa: BLE001 - corrupt/unreadable image
+        return left, top, width, height
+    if nw <= 0 or nh <= 0 or width <= 0 or height <= 0:
+        return left, top, width, height
+
+    ar = nw / nh
+    box_ar = width / height
+    if ar > box_ar:
+        # Wider than the box: fit by width, center vertically.
+        w = width
+        h = int(round(width / ar))
+    else:
+        # Taller than the box: fit by height, center horizontally.
+        h = height
+        w = int(round(height * ar))
+    return left + (width - w) // 2, top + (height - h) // 2, w, h
+
+
 def add_image_to_placeholder(slide, image_data):
     for shape in slide.shapes:
         if not shape.has_text_frame:
@@ -67,10 +93,9 @@ def add_image_to_placeholder(slide, image_data):
         for img_key in image_placeholders:
             if img_key in image_data:
                 img_path = image_data[img_key]
-                left = shape.left
-                top = shape.top
-                width = shape.width
-                height = shape.height
+                left, top, width, height = _fit_box(
+                    img_path, shape.left, shape.top, shape.width, shape.height
+                )
                 shape._element.getparent().remove(shape._element)
                 slide.shapes.add_picture(img_path, left, top, width, height)
                 break
