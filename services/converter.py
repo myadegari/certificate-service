@@ -18,7 +18,8 @@ CONVERT_TIMEOUT_SECONDS = 120
 
 # Persian (fa-IR) LCID = 0x429 (1065). Forces LibreOffice's factory/UI/system
 # locale to Persian on first run so digits, dates, and complex-script (CTL)
-# defaults follow the Persian locale.
+# defaults follow the Persian locale. CTLFont enables the complex-text-layout
+# engine (correct Persian shaping / bidi / RTL metrics) for every conversion.
 PERSIAN_LOCALE_XCU = """<?xml version="1.0" encoding="UTF-8"?>
 <oor:items xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema">
  <item oor:path="/org.openoffice.Setup/L10N"><prop oor:name="ooSetupFactoryLocale" oor:op="fuse"><value>0x429</value></prop></item>
@@ -27,6 +28,7 @@ PERSIAN_LOCALE_XCU = """<?xml version="1.0" encoding="UTF-8"?>
  <item oor:path="/org.openoffice.Setup/L10N"><prop oor:name="ooSetupFactorySystemLocale" oor:op="fuse"><value>0x429</value></prop></item>
  <item oor:path="/org.openoffice.Setup/L10N"><prop oor:name="ooSetupSystemLocale" oor:op="fuse"><value>fa-IR</value></prop></item>
  <item oor:path="/org.openoffice.Setup/L10N"><prop oor:name="ooSetupFactoryDefaultFilterLocale" oor:op="fuse"><value>fa-IR</value></prop></item>
+ <item oor:path="/org.openoffice.Office.Common/I18N/CTL"><prop oor:name="CTLFont" oor:op="fuse"><value>true</value></prop></item>
 </oor:items>
 """
 
