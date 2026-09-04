@@ -19,6 +19,7 @@ class Course(BaseModel):
     courseCode: str = Field(max_length=16)
     name: str = Field(max_length=256)
     organizingUnit: str = Field(max_length=256)
+    organizingUnit2: str | None = Field(default=None, max_length=256)
     date: str = Field(max_length=32)
     time: str = Field(max_length=32)
     signatory: User

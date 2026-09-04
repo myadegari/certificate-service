@@ -81,10 +81,15 @@ def build_job_data(request: CertificateRequest) -> tuple[str, dict]:
                 status_code=422, detail="category 2 requires course.signatory2"
             )
         signatory2_data = prepare_signatory_data(request.course.signatory2)
+        # The second organizing-unit line is prefixed with the Persian "و"
+        # conjunction only when it has content, so a blank value collapses to
+        # "" and never leaves a dangling "و " after {{org}}.
+        u2 = request.course.organizingUnit2 or ""
         text_data.update(
             {
                 "signatory2": signatory2_data.name,
                 "position2": signatory2_data.position,
+                "org2": f"و {u2}" if u2 else "",
             }
         )
         image_data.update(
