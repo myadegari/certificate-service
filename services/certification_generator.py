@@ -8,7 +8,6 @@ from pptx import Presentation
 
 from core.config import settings
 from core.storage import get_file_bytes
-from services.converter import convert_to_pdf  # noqa: F401  (re-exported for worker)
 
 PLACEHOLDER_IMAGE = os.path.join("assets", "n-image.png")
 

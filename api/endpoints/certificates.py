@@ -8,8 +8,7 @@ from fastapi.responses import JSONResponse
 from core.config import settings
 from core.messaging import publish_job
 from models.certificate import CertificateRequest, Signatory
-from services.certification_generator import generate_certificate, safe_image
-from services.converter import convert_to_pdf
+from services.pipeline import build_pdf
 
 router = APIRouter()
 
@@ -151,18 +150,7 @@ async def render_certificate_endpoint(
     require_internal_token(x_internal_token)
     _cert_id, job_data = build_job_data(request)
 
-    image_data = {
-        key: await safe_image(ref) for key, ref in job_data["image_data"].items()
-    }
-    pptx_path = await generate_certificate(
-        template_path=job_data["template_path"],
-        output_dir=job_data["output_dir"],
-        text_data=job_data["text_data"],
-        image_data=image_data,
-        qr_data=job_data["qr_data"],
-    )
-    # convert_to_pdf deletes the source .pptx on success.
-    pdf_path = await convert_to_pdf(pptx_path, job_data["output_dir"])
+    pdf_path = await build_pdf(job_data)
     try:
         with open(pdf_path, "rb") as fh:
             pdf_bytes = fh.read()

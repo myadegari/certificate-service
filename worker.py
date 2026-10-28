@@ -7,9 +7,9 @@ from pathlib import Path
 
 import aio_pika
 import aiohttp
+from aio_pika.abc import AbstractIncomingMessage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from aio_pika.abc import AbstractIncomingMessage
 from redis import asyncio as aioredis
 
 from core.config import settings
@@ -17,11 +17,7 @@ from core.storage import (
     upload_pdf_to_storage_and_save_to_db,
     upsert_job_status_in_db,
 )
-from services.certification_generator import (
-    convert_to_pdf,
-    generate_certificate,
-    safe_image,
-)
+from services.pipeline import build_pdf
 
 redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
 
@@ -72,7 +68,7 @@ async def send_status_webhook(payload: dict) -> None:
     secret = settings.webhook_secret or ""
     body = json.dumps(payload).encode("utf-8")
     timestamp = str(int(time.time()))
-    signed = f"{timestamp}.".encode("utf-8") + body
+    signed = f"{timestamp}.".encode() + body
     signature = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
     headers = {
         "Content-Type": "application/json",
@@ -142,25 +138,13 @@ async def publish_notification(
         await send_status_webhook(message)
 
 
-async def process_images(image_refs: dict) -> dict:
-    return {key: await safe_image(ref) for key, ref in image_refs.items()}
-
-
 async def run_job(job_id: str, data: dict, job_type: str) -> str:
     """Generate, convert, and upload one certificate. Returns the File id."""
-    image_data = await process_images(data["image_data"])
-    pptx_path = await generate_certificate(
-        template_path=data["template_path"],
-        output_dir=data["output_dir"],
-        text_data=data["text_data"],
-        image_data=image_data,
-        qr_data=data["qr_data"],
-    )
-    pdf_path = await convert_to_pdf(pptx_path, data["output_dir"])
+    pdf_path = await build_pdf(data)
 
     print(f"Uploading final PDF: {pdf_path}")
     file_id = await upload_pdf_to_storage_and_save_to_db(
-        pdf_path,
+        str(pdf_path),
         job_id,
         job_type,
         data.get("courseCode", ""),

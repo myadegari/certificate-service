@@ -103,12 +103,12 @@ async def convert_to_pdf(source_path: str, output_dir: str) -> str:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=CONVERT_TIMEOUT_SECONDS
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             await proc.wait()
             raise RuntimeError(
                 f"LibreOffice conversion timed out after {CONVERT_TIMEOUT_SECONDS}s"
-            )
+            ) from None
     finally:
         shutil.rmtree(profile, ignore_errors=True)
 
